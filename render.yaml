@@ -1,0 +1,26 @@
+services:
+  - type: web
+    name: blender-mcp-server
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    region: oregon
+    plan: standard        # 2GB RAM, 1 vCPU — required for headless Blender rendering
+    envVars:
+      - key: PORT
+        value: 8000
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: R2_ACCOUNT_ID
+        sync: false
+      - key: R2_ACCESS_KEY_ID
+        sync: false
+      - key: R2_SECRET_ACCESS_KEY
+        sync: false
+      - key: R2_BUCKET_NAME
+        value: blender-outputs
+      - key: MCP_API_KEY
+        sync: false
+    healthCheckPath: /health
+    autoDeploy: true

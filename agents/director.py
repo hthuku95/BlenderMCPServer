@@ -4,6 +4,11 @@ LangGraph Director Agent — Phase 2
 Takes a high-level creative brief and orchestrates the 6 BlenderMCPServer tools
 to produce a list of video/image asset URLs ready for use in auto_generate_video.
 
+Provider: controlled by LLM_PROVIDER env var (see tools/llm_client.py).
+  "auto"    — Gemini primary, Claude fallback  (default)
+  "gemini"  — always Gemini gemini-2.0-flash
+  "claude"  — always Claude claude-opus-4-6
+
 Usage:
     import asyncio
     from agents.director import run_director
@@ -12,19 +17,18 @@ Usage:
         "Create an intro package for a tech finance YouTube channel: "
         "animated title card, a lower-third for the host, and a 3D scene."
     ))
-    # result = {"assets": [{"tool": str, "url": str}, ...], "summary": str}
+    # result = {"assets": [{"tool": str, "url": str}, ...], "summary": str, "provider": str}
 """
 
 import json
 import os
 from typing import Annotated, TypedDict
 
-from langchain_anthropic import ChatAnthropic  # type: ignore
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage  # type: ignore
-from langchain_core.tools import tool  # type: ignore
-from langgraph.graph import END, StateGraph  # type: ignore
-from langgraph.graph.message import add_messages  # type: ignore
-from langgraph.prebuilt import ToolNode  # type: ignore
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.tools import tool
+from langgraph.graph import END, StateGraph
+from langgraph.graph.message import add_messages
+from langgraph.prebuilt import ToolNode
 
 from tools.render_tools import (
     impl_generate_data_viz,
@@ -34,6 +38,7 @@ from tools.render_tools import (
     impl_generate_thumbnail,
     impl_generate_title_card,
 )
+from tools.llm_client import get_chat_model, active_provider
 
 # ---------------------------------------------------------------------------
 # LangChain tool wrappers (thin async wrappers over the shared impls)
@@ -126,11 +131,12 @@ TOOLS = [
 
 class DirectorState(TypedDict):
     messages: Annotated[list, add_messages]
-    assets: list[dict]  # accumulated {"tool": str, "url": str} entries
+    assets: list[dict]      # accumulated {"tool": str, "url": str} entries
+    provider: str           # which LLM is driving this run
 
 
 # ---------------------------------------------------------------------------
-# Graph nodes
+# System prompt
 # ---------------------------------------------------------------------------
 
 _SYSTEM = (
@@ -142,24 +148,24 @@ _SYSTEM = (
     "After all tools have finished, write a brief summary of what was produced."
 )
 
+# ---------------------------------------------------------------------------
+# Graph nodes
+# ---------------------------------------------------------------------------
 
 def agent_node(state: DirectorState) -> dict:
-    llm = ChatAnthropic(
-        model="claude-opus-4-6",
-        api_key=os.getenv("ANTHROPIC_API_KEY"),
+    provider = state.get("provider") or active_provider()
+    llm = get_chat_model(
+        temperature=0.7,
         max_tokens=4096,
+        provider=provider,
     ).bind_tools(TOOLS)
 
+    # Use proper SystemMessage so both Claude and Gemini receive it correctly
     messages = state["messages"]
-    # Prepend system as a Human turn if first call
-    if not any(
-        isinstance(m, HumanMessage) and m.content.startswith("System:")
-        for m in messages
-    ):
-        messages = [HumanMessage(content=f"System: {_SYSTEM}")] + messages
+    full_messages = [SystemMessage(content=_SYSTEM)] + list(messages)
 
-    response = llm.invoke(messages)
-    return {"messages": [response], "assets": state.get("assets", [])}
+    response = llm.invoke(full_messages)
+    return {"messages": [response], "assets": state.get("assets", []), "provider": provider}
 
 
 def tools_node(state: DirectorState) -> dict:
@@ -178,7 +184,11 @@ def tools_node(state: DirectorState) -> dict:
             except (json.JSONDecodeError, AttributeError):
                 pass
 
-    return {"messages": result.get("messages", []), "assets": assets}
+    return {
+        "messages": result.get("messages", []),
+        "assets": assets,
+        "provider": state.get("provider", ""),
+    }
 
 
 def should_continue(state: DirectorState) -> str:
@@ -206,29 +216,41 @@ def build_director_graph():
 # Public API
 # ---------------------------------------------------------------------------
 
-async def run_director(brief: str) -> dict:
+async def run_director(brief: str, provider: str | None = None) -> dict:
     """
     Run the director agent with a creative brief.
 
+    Args:
+        brief:    Natural language description of what to produce.
+        provider: Override LLM_PROVIDER for this run.
+                  "gemini" | "claude" | "auto" | None (use env default).
+
     Returns:
         {
-            "assets": [{"tool": str, "url": str}, ...],
-            "summary": str,
+            "assets":   [{"tool": str, "url": str}, ...],
+            "summary":  str,
+            "provider": str,   # which LLM was used
         }
     """
+    resolved = provider or active_provider()
     graph = build_director_graph()
+
     init: DirectorState = {
         "messages": [HumanMessage(content=brief)],
         "assets": [],
+        "provider": resolved,
     }
 
     final = await graph.ainvoke(init)
 
-    # Last non-tool-call AI message is the summary
     summary = ""
     for msg in reversed(final["messages"]):
         if isinstance(msg, AIMessage) and not (hasattr(msg, "tool_calls") and msg.tool_calls):
             summary = msg.content if isinstance(msg.content, str) else str(msg.content)
             break
 
-    return {"assets": final["assets"], "summary": summary}
+    return {
+        "assets": final["assets"],
+        "summary": summary,
+        "provider": final.get("provider", resolved),
+    }

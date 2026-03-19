@@ -25,7 +25,6 @@ from pathlib import Path
 from typing import Literal, TypedDict
 
 from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
-from langchain_google_genai import ChatGoogleGenerativeAI
 from langgraph.graph import END, StateGraph
 
 # ---------------------------------------------------------------------------

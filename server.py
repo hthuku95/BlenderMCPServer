@@ -202,7 +202,13 @@ def _check_api_key(request: Request) -> bool:
 
 
 async def rest_health(request: Request) -> JSONResponse:
-    return JSONResponse({"status": "ok", "service": "BlenderMCPServer", "phase": 2})
+    from tools.llm_client import active_provider
+    return JSONResponse({
+        "status": "ok",
+        "service": "BlenderMCPServer",
+        "phase": 2,
+        "llm_provider": active_provider(),
+    })
 
 
 async def rest_call_tool(request: Request) -> JSONResponse:
@@ -244,9 +250,12 @@ async def rest_director(request: Request) -> JSONResponse:
     if not brief:
         return JSONResponse({"error": "'brief' field is required"}, status_code=400)
 
+    # Optional: caller can force a provider ("gemini" | "claude" | "auto")
+    provider = body.get("provider") or None
+
     try:
         from agents.director import run_director
-        result = await run_director(brief)
+        result = await run_director(brief, provider=provider)
         return JSONResponse(result)
     except Exception as exc:
         return JSONResponse({"error": str(exc)}, status_code=500)

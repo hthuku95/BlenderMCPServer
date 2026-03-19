@@ -1,9 +1,10 @@
 """
-BlenderMCPServer — Phase 1
+BlenderMCPServer — Phase 2
 
 Exposes:
-  - MCP SSE endpoint at /sse  (for Claude Desktop / other MCP clients)
-  - REST endpoint at /api/call_tool  (for Rust video_editor BlenderMCPClient)
+  - MCP SSE endpoint at /sse             (for Claude Desktop / other MCP clients)
+  - REST endpoint at /api/call_tool      (for Rust BlenderMCPClient — single tool call)
+  - REST endpoint at /api/director       (for Rust — run the LangGraph director agent)
   - Health check at /health
 
 Run locally:
@@ -11,15 +12,11 @@ Run locally:
     python server.py
 
 Deploy on Render:
-    start command: python server.py
+    start command: python server.py   (or: xvfb-run -a python server.py)
 """
 
-import asyncio
 import json
 import os
-import tempfile
-import uuid
-from pathlib import Path
 
 import uvicorn
 from dotenv import load_dotenv
@@ -31,58 +28,19 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Mount, Route
 
+from tools.render_tools import (
+    impl_generate_data_viz,
+    impl_generate_latex,
+    impl_generate_lower_third,
+    impl_generate_scene,
+    impl_generate_thumbnail,
+    impl_generate_title_card,
+)
+
 load_dotenv()
 
 MCP_API_KEY = os.getenv("MCP_API_KEY", "")
 PORT = int(os.getenv("PORT", "8000"))
-
-# ---------------------------------------------------------------------------
-# Core render implementation (shared by MCP tools and REST endpoint)
-# ---------------------------------------------------------------------------
-
-async def _impl_generate_scene(
-    prompt: str,
-    duration: float,
-    style: str,
-    reference_image_url: str = "",
-) -> dict:
-    from tools.blender_runner import run_blender_script_with_retry
-    from tools.storage import upload_render
-
-    script_path = Path(__file__).parent / "blender_scripts" / "base_scene.py"
-    output_path = f"/tmp/blender_{uuid.uuid4().hex}.mp4"
-
-    args = {
-        "prompt": prompt,
-        "duration": duration,
-        "style": style,
-        "output_path": output_path,
-    }
-    if reference_image_url:
-        args["reference_image_url"] = reference_image_url
-
-    result = await run_blender_script_with_retry(
-        script_content=script_path.read_text(),
-        args=args,
-        max_attempts=3,
-        timeout=600,
-    )
-
-    video_url = upload_render(output_path, prefix="scenes")
-
-    # Clean up temp file
-    try:
-        os.unlink(output_path)
-    except OSError:
-        pass
-
-    return {
-        "video_url": video_url,
-        "duration": result.get("duration", duration),
-        "resolution": result.get("resolution", "1920x1080"),
-        "frames": result.get("frames", int(duration * 24)),
-    }
-
 
 # ---------------------------------------------------------------------------
 # MCP Server (for Claude Desktop / Cursor / other MCP clients)
@@ -109,15 +67,14 @@ async def blender_generate_scene(
     Generate a procedural 3D Blender scene as an MP4 clip.
 
     Args:
-        prompt: Natural language description of the scene (e.g. "cinematic ocean at sunset, calm mood")
+        prompt: Natural language description of the scene
         duration: Target clip duration in seconds (default 10)
         style: Visual style — "cinematic", "minimal", "energetic", or "calm"
         reference_image_url: Optional URL of a reference/inspiration image
 
     Returns JSON: {"video_url": str, "duration": float, "resolution": str, "frames": int}
     """
-    result = await _impl_generate_scene(prompt, duration, style, reference_image_url)
-    return json.dumps(result)
+    return json.dumps(await impl_generate_scene(prompt, duration, style, reference_image_url))
 
 
 @mcp.tool()
@@ -127,22 +84,16 @@ async def blender_generate_thumbnail(
     style: str = "youtube",
 ) -> str:
     """
-    Generate a 3D rendered YouTube thumbnail image (1280x720 PNG).
+    Generate a 3D rendered YouTube thumbnail image (1280×720 PNG).
 
     Args:
-        prompt: Scene description (e.g. "tech startup success, dark background, neon blue accents")
-        title_text: Optional text to overlay on the thumbnail
+        prompt: Scene description
+        title_text: Optional text to embed in the 3D scene
         style: "youtube" | "cinematic" | "minimal"
 
     Returns JSON: {"image_url": str, "width": int, "height": int}
     """
-    # Phase 2 — stub for now; Blender thumbnail script will be added
-    return json.dumps({
-        "image_url": "",
-        "width": 1280,
-        "height": 720,
-        "status": "Phase 2 — not yet implemented",
-    })
+    return json.dumps(await impl_generate_thumbnail(prompt, title_text, style))
 
 
 @mcp.tool()
@@ -157,13 +108,13 @@ async def blender_generate_title_card(
 
     Args:
         title: Main title text
-        subtitle: Secondary/tagline text (optional)
+        subtitle: Secondary text (optional)
         duration: Clip length in seconds (3–8 recommended)
-        style: Visual style description
+        style: "cinematic" | "minimal" | "bold"
 
-    Returns JSON: {"video_url": str}
+    Returns JSON: {"video_url": str, "duration": float}
     """
-    return json.dumps({"video_url": "", "status": "Phase 2 — not yet implemented"})
+    return json.dumps(await impl_generate_title_card(title, subtitle, duration, style))
 
 
 @mcp.tool()
@@ -178,13 +129,13 @@ async def blender_generate_data_viz(
 
     Args:
         data_json: JSON array of data points e.g. '[{"label":"A","value":42},...]'
-        chart_type: "bar" | "line" | "pie" | "globe"
+        chart_type: "bar" (line/pie reserved for future phases)
         title: Chart title overlay text
         duration: Animation length in seconds
 
-    Returns JSON: {"video_url": str}
+    Returns JSON: {"video_url": str, "duration": float, "chart_type": str}
     """
-    return json.dumps({"video_url": "", "status": "Phase 2 — not yet implemented"})
+    return json.dumps(await impl_generate_data_viz(data_json, chart_type, title, duration))
 
 
 @mcp.tool()
@@ -195,17 +146,17 @@ async def blender_generate_lower_third(
     duration: float = 5.0,
 ) -> str:
     """
-    Generate an animated lower-third text overlay clip (transparent background).
+    Generate an animated lower-third text overlay clip (green-screen background for keying).
 
     Args:
-        name_text: Primary text (e.g. person name or topic)
-        subtitle_text: Secondary text (e.g. job title or context)
-        style: Animation/colour style
+        name_text: Primary text (person name / topic)
+        subtitle_text: Secondary text (job title / context)
+        style: "modern" | "minimal" | "bold"
         duration: Display duration in seconds
 
-    Returns JSON: {"video_url": str}
+    Returns JSON: {"video_url": str, "duration": float, "keying": "green_screen"}
     """
-    return json.dumps({"video_url": "", "status": "Phase 2 — not yet implemented"})
+    return json.dumps(await impl_generate_lower_third(name_text, subtitle_text, style, duration))
 
 
 @mcp.tool()
@@ -219,14 +170,14 @@ async def blender_generate_latex(
     Generate a LaTeX/Manim math equation animation clip.
 
     Args:
-        latex_expression: LaTeX expression e.g. r"\frac{d}{dt}\int_a^b f(x,t)dx"
+        latex_expression: LaTeX string e.g. r"\frac{d}{dt}\int_a^b f(x,t)dx"
         animation_type: "appear" | "morph" | "step_by_step"
         duration: Clip length in seconds
         background_style: "dark" | "light" | "transparent"
 
-    Returns JSON: {"video_url": str}
+    Returns JSON: {"video_url": str, "duration": float, "latex_expression": str}
     """
-    return json.dumps({"video_url": "", "status": "Phase 3 — Manim not yet implemented"})
+    return json.dumps(await impl_generate_latex(latex_expression, animation_type, duration, background_style))
 
 
 # ---------------------------------------------------------------------------
@@ -234,7 +185,12 @@ async def blender_generate_latex(
 # ---------------------------------------------------------------------------
 
 TOOL_HANDLERS = {
-    "blender_generate_scene": _impl_generate_scene,
+    "blender_generate_scene":       impl_generate_scene,
+    "blender_generate_thumbnail":   impl_generate_thumbnail,
+    "blender_generate_title_card":  impl_generate_title_card,
+    "blender_generate_data_viz":    impl_generate_data_viz,
+    "blender_generate_lower_third": impl_generate_lower_third,
+    "blender_generate_latex":       impl_generate_latex,
 }
 
 
@@ -246,7 +202,7 @@ def _check_api_key(request: Request) -> bool:
 
 
 async def rest_health(request: Request) -> JSONResponse:
-    return JSONResponse({"status": "ok", "service": "BlenderMCPServer"})
+    return JSONResponse({"status": "ok", "service": "BlenderMCPServer", "phase": 2})
 
 
 async def rest_call_tool(request: Request) -> JSONResponse:
@@ -263,13 +219,35 @@ async def rest_call_tool(request: Request) -> JSONResponse:
 
     if tool_name not in TOOL_HANDLERS:
         return JSONResponse(
-            {"error": f"Unknown tool '{tool_name}'. Available: {list(TOOL_HANDLERS.keys())}"},
+            {"error": f"Unknown tool '{tool_name}'", "available": list(TOOL_HANDLERS)},
             status_code=400,
         )
 
     try:
         result = await TOOL_HANDLERS[tool_name](**args)
         return JSONResponse({"result": result})
+    except Exception as exc:
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+
+async def rest_director(request: Request) -> JSONResponse:
+    """Run the LangGraph director agent with a high-level creative brief."""
+    if not _check_api_key(request):
+        return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
+
+    brief = body.get("brief", "")
+    if not brief:
+        return JSONResponse({"error": "'brief' field is required"}, status_code=400)
+
+    try:
+        from agents.director import run_director
+        result = await run_director(brief)
+        return JSONResponse(result)
     except Exception as exc:
         return JSONResponse({"error": str(exc)}, status_code=500)
 
@@ -281,6 +259,7 @@ async def rest_call_tool(request: Request) -> JSONResponse:
 rest_routes = [
     Route("/health", rest_health),
     Route("/api/call_tool", rest_call_tool, methods=["POST"]),
+    Route("/api/director", rest_director, methods=["POST"]),
 ]
 
 middleware = [
@@ -302,5 +281,5 @@ app = Starlette(
 
 
 if __name__ == "__main__":
-    print(f"BlenderMCPServer starting on port {PORT}")
+    print(f"BlenderMCPServer (Phase 2) starting on port {PORT}")
     uvicorn.run(app, host="0.0.0.0", port=PORT, log_level="info")

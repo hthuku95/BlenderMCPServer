@@ -1,12 +1,18 @@
 """
-Vision tools — analyse images via Claude claude-sonnet-4-6 vision API.
+Vision tools — image analysis via Claude AND Gemini vision APIs.
+
+Strategy:
+  - analyse_reference_image(): uses Gemini (gemini-2.0-flash) as primary,
+    falls back to Claude (claude-sonnet-4-6) if Gemini fails or key is absent.
+  - compare_render_to_reference(): uses Claude as primary (stronger at
+    multi-image comparison with structured JSON output), falls back to Gemini.
+
+This dual-provider pattern maximises availability and lets the two models
+cross-check each other's analysis.
 
 Used by:
   - VisionAgent: analyse reference images → structured scene parameters
   - QA Agent:    compare a rendered frame vs the reference → correction dict
-
-Both functions return structured dicts (not raw text) so the pipeline can
-act on them programmatically.
 """
 from __future__ import annotations
 
@@ -16,11 +22,12 @@ import os
 from pathlib import Path
 
 
+# ---------------------------------------------------------------------------
+# Shared helpers
+# ---------------------------------------------------------------------------
+
 def _encode_image(path_or_url: str) -> tuple[str, str]:
-    """
-    Return (media_type, base64_data) for an image file or a data-URI.
-    If path_or_url starts with http/https, download it first.
-    """
+    """Return (media_type, base64_data) for a local file or http(s) URL."""
     if path_or_url.startswith(("http://", "https://")):
         import httpx
         resp = httpx.get(path_or_url, timeout=30, follow_redirects=True)
@@ -38,39 +45,128 @@ def _encode_image(path_or_url: str) -> tuple[str, str]:
     return media_type, base64.standard_b64encode(data).decode()
 
 
-def _claude_vision(prompt: str, image_path_or_url: str, model: str = "claude-sonnet-4-6") -> str:
-    """Call Claude vision with a single image and a text prompt."""
-    import anthropic
-    client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+def _extract_json(raw: str) -> dict | None:
+    """Strip markdown fences and parse JSON. Returns None on failure."""
+    raw = raw.strip()
+    if raw.startswith("```"):
+        parts = raw.split("```")
+        # parts[1] is the fenced block
+        raw = parts[1]
+        if raw.startswith("json"):
+            raw = raw[4:]
+        raw = raw.strip()
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        return None
 
+
+# ---------------------------------------------------------------------------
+# Provider backends
+# ---------------------------------------------------------------------------
+
+def _gemini_vision_single(prompt: str, image_path_or_url: str) -> str:
+    """Call Gemini with one image. Returns raw text response."""
+    import google.generativeai as genai
+
+    api_key = os.environ.get("GEMINI_API_KEY")
+    if not api_key:
+        raise RuntimeError("GEMINI_API_KEY not set")
+
+    genai.configure(api_key=api_key)
+    model = genai.GenerativeModel("gemini-2.0-flash")
+
+    media_type, b64 = _encode_image(image_path_or_url)
+    image_part = {"mime_type": media_type, "data": b64}
+
+    response = model.generate_content([image_part, prompt])
+    return response.text
+
+
+def _gemini_vision_two(prompt: str, image1: str, image2: str) -> str:
+    """Call Gemini with two images (for render vs reference comparison)."""
+    import google.generativeai as genai
+
+    api_key = os.environ.get("GEMINI_API_KEY")
+    if not api_key:
+        raise RuntimeError("GEMINI_API_KEY not set")
+
+    genai.configure(api_key=api_key)
+    model = genai.GenerativeModel("gemini-2.0-flash")
+
+    mt1, b1 = _encode_image(image1)
+    mt2, b2 = _encode_image(image2)
+
+    response = model.generate_content([
+        {"mime_type": mt1, "data": b1},
+        {"mime_type": mt2, "data": b2},
+        prompt,
+    ])
+    return response.text
+
+
+def _claude_vision_single(prompt: str, image_path_or_url: str) -> str:
+    """Call Claude vision with one image."""
+    import anthropic
+
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        raise RuntimeError("ANTHROPIC_API_KEY not set")
+
+    client = anthropic.Anthropic(api_key=api_key)
     media_type, b64 = _encode_image(image_path_or_url)
 
     response = client.messages.create(
-        model=model,
+        model="claude-sonnet-4-6",
         max_tokens=1024,
-        messages=[
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "image",
-                        "source": {
-                            "type": "base64",
-                            "media_type": media_type,
-                            "data": b64,
-                        },
-                    },
-                    {"type": "text", "text": prompt},
-                ],
-            }
-        ],
+        messages=[{
+            "role": "user",
+            "content": [
+                {"type": "image", "source": {"type": "base64", "media_type": media_type, "data": b64}},
+                {"type": "text", "text": prompt},
+            ],
+        }],
     )
     return response.content[0].text
 
 
+def _claude_vision_two(prompt: str, image1: str, image2: str) -> str:
+    """Call Claude vision with two images."""
+    import anthropic
+
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        raise RuntimeError("ANTHROPIC_API_KEY not set")
+
+    client = anthropic.Anthropic(api_key=api_key)
+    mt1, b1 = _encode_image(image1)
+    mt2, b2 = _encode_image(image2)
+
+    response = client.messages.create(
+        model="claude-sonnet-4-6",
+        max_tokens=1024,
+        messages=[{
+            "role": "user",
+            "content": [
+                {"type": "image", "source": {"type": "base64", "media_type": mt1, "data": b1}},
+                {"type": "image", "source": {"type": "base64", "media_type": mt2, "data": b2}},
+                {"type": "text", "text": prompt},
+            ],
+        }],
+    )
+    return response.content[0].text
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
 def analyse_reference_image(image_path_or_url: str) -> dict:
     """
     Analyse a reference image and extract structured scene parameters for Blender.
+
+    Primary: Gemini (gemini-2.0-flash) — fast and cost-effective.
+    Fallback: Claude (claude-sonnet-4-6) — used if Gemini key absent or call fails.
 
     Returns a dict with keys:
         dominant_colors: list[str]   — hex colour codes (up to 5)
@@ -81,46 +177,61 @@ def analyse_reference_image(image_path_or_url: str) -> dict:
         key_objects: list[str]       — main scene elements to reproduce
         blender_reference_mode: int  — 1 (Image overlay), 2 (Camera BG), or 3 (World HDRI)
         notes: str                   — free-text advice for the bpy script generator
+        _provider: str               — "gemini" or "claude" (which model answered)
     """
     prompt = """Analyse this reference image for 3D scene reproduction in Blender.
 Return ONLY valid JSON with these fields:
 {
-  "dominant_colors": ["#rrggbb", ...],        // up to 5 hex codes
+  "dominant_colors": ["#rrggbb", ...],
   "background_type": "solid|gradient|hdri|texture",
   "lighting_type": "studio|natural|dramatic|neon",
   "camera_angle": "front|top|isometric|orbit|close_up",
   "mood": "cinematic|minimal|energetic|calm|dark",
-  "key_objects": ["object1", "object2"],      // main scene elements
-  "blender_reference_mode": 1,                // 1=Image overlay, 2=Camera BG, 3=World HDRI
+  "key_objects": ["object1", "object2"],
+  "blender_reference_mode": 1,
   "notes": "free text advice for the script generator"
 }
 blender_reference_mode guide:
-  1 = Simple image: flat design, 2D, logo, UI screenshot → Mode 1 (Empty/Image overlay)
-  2 = Photo/realistic: product shot, portrait, real scene → Mode 2 (Camera Background)
-  3 = Environment/landscape: outdoor, sky, HDRI-worthy scene → Mode 3 (World/HDRI)
+  1 = Simple image: flat design, 2D, logo, UI screenshot
+  2 = Photo/realistic: product shot, portrait, real scene
+  3 = Environment/landscape: outdoor, sky, HDRI-worthy scene
 """
-    raw = _claude_vision(prompt, image_path_or_url)
 
-    # Extract JSON from the response
-    raw = raw.strip()
-    if raw.startswith("```"):
-        raw = raw.split("```")[1]
-        if raw.startswith("json"):
-            raw = raw[4:]
-    try:
-        return json.loads(raw)
-    except json.JSONDecodeError:
-        # fallback defaults
-        return {
-            "dominant_colors": ["#1a1a2e"],
-            "background_type": "gradient",
-            "lighting_type": "studio",
-            "camera_angle": "front",
-            "mood": "cinematic",
-            "key_objects": [],
-            "blender_reference_mode": 2,
-            "notes": raw,
-        }
+    _FALLBACK = {
+        "dominant_colors": ["#1a1a2e"],
+        "background_type": "gradient",
+        "lighting_type": "studio",
+        "camera_angle": "front",
+        "mood": "cinematic",
+        "key_objects": [],
+        "blender_reference_mode": 2,
+        "notes": "",
+        "_provider": "fallback",
+    }
+
+    # Try Gemini first
+    if os.environ.get("GEMINI_API_KEY"):
+        try:
+            raw = _gemini_vision_single(prompt, image_path_or_url)
+            result = _extract_json(raw)
+            if result:
+                result["_provider"] = "gemini"
+                return result
+        except Exception:
+            pass  # fall through to Claude
+
+    # Try Claude
+    if os.environ.get("ANTHROPIC_API_KEY"):
+        try:
+            raw = _claude_vision_single(prompt, image_path_or_url)
+            result = _extract_json(raw)
+            if result:
+                result["_provider"] = "claude"
+                return result
+        except Exception:
+            pass
+
+    return _FALLBACK
 
 
 def compare_render_to_reference(
@@ -129,27 +240,23 @@ def compare_render_to_reference(
     prompt_context: str = "",
 ) -> dict:
     """
-    QA comparison: analyse a rendered frame against the reference image.
+    QA comparison: compare a rendered frame against the reference image.
+
+    Primary: Claude (claude-sonnet-4-6) — stronger at structured multi-image comparison.
+    Fallback: Gemini (gemini-2.0-flash) — used if Claude key absent or call fails.
 
     Returns a dict with keys:
-        match_score: float          — 0.0–1.0 (1.0 = perfect match)
+        match_score: float          — 0.0–1.0
         approved: bool              — True if match_score >= 0.70
-        corrections: dict           — keyed adjustments to apply in the next render pass:
+        corrections: dict
             lighting_correction: str | None
             color_correction: str | None
             composition_correction: str | None
             object_correction: str | None
-        notes: str                  — human-readable QA summary
+        notes: str
+        _provider: str              — "claude" or "gemini"
     """
-    # Build a two-image prompt
-    import anthropic
-    client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
-
-    ref_media_type, ref_b64 = _encode_image(reference_path_or_url)
-    render_media_type, render_b64 = _encode_image(render_path)
-
     context_str = f"\nOriginal prompt context: {prompt_context}" if prompt_context else ""
-
     prompt = f"""Compare these two images: [IMAGE 1 = REFERENCE], [IMAGE 2 = RENDER].{context_str}
 
 Return ONLY valid JSON:
@@ -168,43 +275,36 @@ Return ONLY valid JSON:
 approved = true if match_score >= 0.70.
 Be specific in corrections — they will be fed back into a Blender script generator."""
 
-    response = client.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=1024,
-        messages=[
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "image",
-                        "source": {"type": "base64", "media_type": ref_media_type, "data": ref_b64},
-                    },
-                    {
-                        "type": "image",
-                        "source": {"type": "base64", "media_type": render_media_type, "data": render_b64},
-                    },
-                    {"type": "text", "text": prompt},
-                ],
-            }
-        ],
-    )
+    _FALLBACK = {
+        "match_score": 0.5,
+        "approved": False,
+        "corrections": {},
+        "notes": "Vision comparison unavailable",
+        "_provider": "fallback",
+    }
 
-    raw = response.content[0].text.strip()
-    if raw.startswith("```"):
-        raw = raw.split("```")[1]
-        if raw.startswith("json"):
-            raw = raw[4:]
+    # Try Claude first (better multi-image structured output)
+    if os.environ.get("ANTHROPIC_API_KEY"):
+        try:
+            raw = _claude_vision_two(prompt, reference_path_or_url, render_path)
+            result = _extract_json(raw)
+            if result:
+                result.setdefault("approved", result.get("match_score", 0) >= 0.70)
+                result["_provider"] = "claude"
+                return result
+        except Exception:
+            pass
 
-    try:
-        result = json.loads(raw)
-    except json.JSONDecodeError:
-        result = {
-            "match_score": 0.5,
-            "approved": False,
-            "corrections": {},
-            "notes": raw,
-        }
+    # Fallback to Gemini
+    if os.environ.get("GEMINI_API_KEY"):
+        try:
+            raw = _gemini_vision_two(prompt, reference_path_or_url, render_path)
+            result = _extract_json(raw)
+            if result:
+                result.setdefault("approved", result.get("match_score", 0) >= 0.70)
+                result["_provider"] = "gemini"
+                return result
+        except Exception:
+            pass
 
-    # Ensure approved key is consistent with score
-    result.setdefault("approved", result.get("match_score", 0) >= 0.70)
-    return result
+    return _FALLBACK

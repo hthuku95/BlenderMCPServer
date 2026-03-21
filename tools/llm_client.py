@@ -13,22 +13,43 @@ Models:
   Gemini  — gemini-2.0-flash  (overridable via GEMINI_MODEL)
   Claude  — claude-opus-4-6   (overridable via CLAUDE_MODEL)
   Claude opus-4-6 is the director default because it makes better multi-step
-  tool-use decisions than Sonnet when orchestrating 6 render tools at once.
+  tool-use decisions than Sonnet when orchestrating 7 render tools at once.
+
+LangSmith tracing (Phase 5):
+  Set LANGCHAIN_API_KEY to enable automatic LangSmith tracing of all
+  LangChain/LangGraph calls.  Optional but highly recommended for debugging
+  Director agent runs in production.
+  LANGCHAIN_PROJECT   — project name (default "BlenderMCPServer")
+  LANGCHAIN_TRACING_V2 — set to "true" automatically when LANGCHAIN_API_KEY is present
 
 Usage:
-    from tools.llm_client import get_chat_model, get_raw_llm
+    from tools.llm_client import get_chat_model, generate_text
 
     # LangChain chat model (supports .bind_tools())
     llm = get_chat_model()
     llm_with_tools = llm.bind_tools(my_tools)
 
     # Raw text generation (no tools, simple Q&A)
-    text = await generate_text("Describe this scene in 3 words.")
+    text, provider = await generate_text("Describe this scene in 3 words.")
 """
 from __future__ import annotations
 
 import os
 from typing import Any
+
+
+# ---------------------------------------------------------------------------
+# LangSmith tracing — enable automatically when API key is present (Phase 5)
+# ---------------------------------------------------------------------------
+
+def _configure_langsmith() -> None:
+    """Set LangChain env vars for LangSmith tracing if LANGCHAIN_API_KEY is set."""
+    if os.getenv("LANGCHAIN_API_KEY"):
+        os.environ.setdefault("LANGCHAIN_TRACING_V2", "true")
+        os.environ.setdefault("LANGCHAIN_PROJECT", "BlenderMCPServer")
+
+
+_configure_langsmith()
 
 
 # ---------------------------------------------------------------------------

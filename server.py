@@ -35,7 +35,10 @@ from tools.render_tools import (
     impl_generate_scene,
     impl_generate_thumbnail,
     impl_generate_title_card,
+    impl_generate_ui_mockup,
 )
+from tools.job_queue import queue as _job_queue
+from tools.rate_limiter import limiter as _limiter
 
 load_dotenv()
 
@@ -160,6 +163,48 @@ async def blender_generate_lower_third(
 
 
 @mcp.tool()
+async def blender_generate_ui_mockup(
+    device: str = "iphone",
+    animation: str = "reveal",
+    duration: float = 6.0,
+    screenshot_url: str = "",
+    screenshot_spec: str = "",
+    background_color: str = "",
+    accent_color: str = "",
+) -> str:
+    """
+    Render a screenshot inside a 3D device frame (iPhone, MacBook, browser, iPad).
+
+    Args:
+        device: "iphone" | "macbook" | "browser" | "ipad"
+        animation: "static" (PNG) | "reveal" (fade-in) | "scroll" | "tilt"
+        duration: Clip length in seconds (ignored for static)
+        screenshot_url: URL of screenshot to place on the device screen
+        screenshot_spec: JSON design spec to auto-generate a screenshot
+                         e.g. '{"type":"browser","url":"https://myapp.com","title":"My App",
+                               "body":"...","bg_color":"#fff","accent_color":"#0070f3"}'
+        background_color: JSON RGB float array e.g. "[0.05, 0.05, 0.08]"
+        accent_color: JSON RGB float array e.g. "[0.3, 0.5, 1.0]"
+
+    Returns JSON: {"video_url": str, "device": str, "animation": str, "duration": float}
+               or {"image_url": str, "device": str, "animation": "static"}
+    """
+    import json as _json
+    spec = _json.loads(screenshot_spec) if screenshot_spec else None
+    bg   = _json.loads(background_color) if background_color else None
+    acc  = _json.loads(accent_color)     if accent_color else None
+    return json.dumps(await impl_generate_ui_mockup(
+        device=device,
+        animation=animation,
+        duration=duration,
+        screenshot_url=screenshot_url,
+        screenshot_spec=spec,
+        background_color=bg,
+        accent_color=acc,
+    ))
+
+
+@mcp.tool()
 async def blender_generate_latex(
     latex_expression: str,
     animation_type: str = "appear",
@@ -191,7 +236,13 @@ TOOL_HANDLERS = {
     "blender_generate_data_viz":    impl_generate_data_viz,
     "blender_generate_lower_third": impl_generate_lower_third,
     "blender_generate_latex":       impl_generate_latex,
+    "blender_generate_ui_mockup":   impl_generate_ui_mockup,
 }
+
+
+# Register all tools with the async job queue
+for _name, _fn in TOOL_HANDLERS.items():
+    _job_queue.register(_name, _fn)
 
 
 def _check_api_key(request: Request) -> bool:
@@ -206,7 +257,8 @@ async def rest_health(request: Request) -> JSONResponse:
     return JSONResponse({
         "status": "ok",
         "service": "BlenderMCPServer",
-        "phase": 2,
+        "phase": 4,
+        "tools": list(TOOL_HANDLERS),
         "llm_provider": active_provider(),
     })
 
@@ -214,6 +266,11 @@ async def rest_health(request: Request) -> JSONResponse:
 async def rest_call_tool(request: Request) -> JSONResponse:
     if not _check_api_key(request):
         return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+    # Rate limiting — key by API key token (or IP as fallback)
+    rl_key = request.headers.get("Authorization") or (request.client.host if request.client else "unknown")
+    if not _limiter.allow(rl_key):
+        return JSONResponse({"error": "Rate limit exceeded"}, status_code=429)
 
     try:
         body = await request.json()
@@ -262,13 +319,76 @@ async def rest_director(request: Request) -> JSONResponse:
 
 
 # ---------------------------------------------------------------------------
+# Async job endpoints (Phase 5)
+# ---------------------------------------------------------------------------
+
+async def rest_submit_job(request: Request) -> JSONResponse:
+    """POST /api/jobs — submit a tool call as a background job."""
+    if not _check_api_key(request):
+        return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+    rl_key = request.headers.get("Authorization") or (request.client.host if request.client else "unknown")
+    if not _limiter.allow(rl_key):
+        return JSONResponse({"error": "Rate limit exceeded"}, status_code=429)
+
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
+
+    tool_name = body.get("tool", "")
+    args = body.get("args", {})
+
+    if tool_name not in TOOL_HANDLERS:
+        return JSONResponse(
+            {"error": f"Unknown tool '{tool_name}'", "available": list(TOOL_HANDLERS)},
+            status_code=400,
+        )
+
+    try:
+        job_id = await _job_queue.submit(tool_name, args)
+        return JSONResponse({"job_id": job_id, "state": "pending"}, status_code=202)
+    except Exception as exc:
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+
+async def rest_get_job(request: Request) -> JSONResponse:
+    """GET /api/jobs/{job_id} — poll job status."""
+    if not _check_api_key(request):
+        return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+    job_id = request.path_params.get("job_id", "")
+    status = _job_queue.get(job_id)
+    if status is None:
+        return JSONResponse({"error": f"Job '{job_id}' not found"}, status_code=404)
+    return JSONResponse(status.to_dict())
+
+
+async def rest_list_jobs(request: Request) -> JSONResponse:
+    """GET /api/jobs — list recent jobs."""
+    if not _check_api_key(request):
+        return JSONResponse({"error": "Unauthorized"}, status_code=401)
+    return JSONResponse({"jobs": _job_queue.list_jobs(limit=50)})
+
+
+async def rest_jobs(request: Request) -> JSONResponse:
+    """GET /api/jobs — list  |  POST /api/jobs — submit."""
+    if request.method == "POST":
+        return await rest_submit_job(request)
+    return await rest_list_jobs(request)
+
+
+# ---------------------------------------------------------------------------
 # Combined Starlette app
 # ---------------------------------------------------------------------------
 
 rest_routes = [
-    Route("/health", rest_health),
-    Route("/api/call_tool", rest_call_tool, methods=["POST"]),
-    Route("/api/director", rest_director, methods=["POST"]),
+    Route("/health",                rest_health),
+    Route("/api/call_tool",         rest_call_tool,   methods=["POST"]),
+    Route("/api/director",          rest_director,    methods=["POST"]),
+    # Phase 5 — async job queue
+    Route("/api/jobs",              rest_jobs,        methods=["GET", "POST"]),
+    Route("/api/jobs/{job_id}",     rest_get_job,     methods=["GET"]),
 ]
 
 middleware = [
@@ -290,5 +410,5 @@ app = Starlette(
 
 
 if __name__ == "__main__":
-    print(f"BlenderMCPServer (Phase 2) starting on port {PORT}")
+    print(f"BlenderMCPServer (Phase 5) starting on port {PORT}")
     uvicorn.run(app, host="0.0.0.0", port=PORT, log_level="info")

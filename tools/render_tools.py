@@ -253,6 +253,114 @@ async def impl_generate_lower_third(
     }
 
 
+async def impl_generate_ui_mockup(
+    device: str = "iphone",
+    animation: str = "reveal",
+    duration: float = 6.0,
+    screenshot_path: str = "",
+    screenshot_url: str = "",
+    screenshot_spec: dict | None = None,
+    background_color: list | None = None,
+    accent_color: list | None = None,
+    fps: int = 60,
+) -> dict:
+    """
+    Phase 4 — Device Mockup pipeline.
+
+    Accepts a screenshot in one of three ways (in priority order):
+      1. screenshot_path  — local file path
+      2. screenshot_url   — remote URL (downloaded to /tmp)
+      3. screenshot_spec  — design spec dict, rasterised via svg_export
+
+    Renders via blender_scripts/device_mockup.py and uploads to R2.
+
+    Returns:
+        {"video_url": str, "device": str, "animation": str, "duration": float}
+        or {"image_url": str, "device": str} for animation="static"
+    """
+    import tempfile
+    from tools.blender_runner import run_blender_script_with_retry
+    from tools.storage import upload_render
+
+    # ---- resolve screenshot to a local path --------------------------------
+    local_screenshot = screenshot_path
+
+    if not local_screenshot and screenshot_url:
+        import httpx
+        ext = ".png" if screenshot_url.lower().endswith(".png") else ".jpg"
+        with tempfile.NamedTemporaryFile(suffix=ext, delete=False, prefix="mockup_shot_") as f:
+            dl_path = f.name
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.get(screenshot_url)
+            resp.raise_for_status()
+            with open(dl_path, "wb") as f:
+                f.write(resp.content)
+        local_screenshot = dl_path
+
+    if not local_screenshot and screenshot_spec:
+        from tools.svg_export import screenshot_from_spec
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False, prefix="mockup_spec_") as f:
+            spec_path = f.name
+        local_screenshot = screenshot_from_spec(screenshot_spec, spec_path)
+
+    # ---- build Blender args ------------------------------------------------
+    uid = uuid.uuid4().hex
+    if animation == "static":
+        output_path = f"/tmp/mockup_{uid}.png"
+    else:
+        output_path = f"/tmp/mockup_{uid}.mp4"
+
+    blender_args: dict = {
+        "output_path": output_path,
+        "device": device,
+        "animation": animation,
+        "duration": duration,
+        "fps": fps,
+    }
+    if local_screenshot:
+        blender_args["screenshot_path"] = local_screenshot
+    if background_color:
+        blender_args["background_color"] = background_color
+    if accent_color:
+        blender_args["accent_color"] = accent_color
+
+    script_path = _ROOT / "blender_scripts" / "device_mockup.py"
+    result = await run_blender_script_with_retry(
+        script_content=script_path.read_text(),
+        args=blender_args,
+        max_attempts=2,
+        timeout=600 if animation != "static" else 300,
+    )
+
+    # For static renders, Blender writes a .png even if output_path ends in .mp4
+    final_path = result.get("output_path", output_path)
+    if not os.path.exists(final_path):
+        # Blender may have renamed .mp4 → .png for static
+        candidate = output_path.replace(".mp4", ".png")
+        if os.path.exists(candidate):
+            final_path = candidate
+
+    if animation == "static":
+        image_url = upload_render(final_path, prefix="mockups")
+        try:
+            os.unlink(final_path)
+        except OSError:
+            pass
+        return {"image_url": image_url, "device": device, "animation": "static"}
+    else:
+        video_url = upload_render(final_path, prefix="mockups")
+        try:
+            os.unlink(final_path)
+        except OSError:
+            pass
+        return {
+            "video_url": video_url,
+            "device": device,
+            "animation": animation,
+            "duration": duration,
+        }
+
+
 async def impl_generate_latex(
     latex_expression: str,
     animation_type: str = "appear",

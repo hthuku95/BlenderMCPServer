@@ -37,6 +37,7 @@ from tools.render_tools import (
     impl_generate_scene,
     impl_generate_thumbnail,
     impl_generate_title_card,
+    impl_generate_ui_mockup,
 )
 from tools.llm_client import get_chat_model, active_provider
 
@@ -116,6 +117,49 @@ async def blender_generate_latex(
     return json.dumps(await impl_generate_latex(latex_expression, animation_type, duration, background_style))
 
 
+@tool
+async def blender_generate_ui_mockup(
+    device: str = "iphone",
+    animation: str = "reveal",
+    duration: float = 6.0,
+    screenshot_url: str = "",
+    screenshot_spec: str = "",
+    background_color: str = "",
+    accent_color: str = "",
+) -> str:
+    """Render a screenshot/image inside a 3D device frame (iPhone, MacBook, browser, iPad).
+
+    Args:
+        device: "iphone" | "macbook" | "browser" | "ipad"
+        animation: "static" (PNG) | "reveal" (fade-in) | "scroll" (vertical scroll) | "tilt" (product reveal)
+        duration: Clip length in seconds (ignored for static)
+        screenshot_url: URL of the screenshot image to place inside the device screen
+        screenshot_spec: JSON string of a design spec to auto-generate a screenshot
+                         (if screenshot_url is empty). Schema: {"type":"browser"|"app",
+                         "url":str, "title":str, "body":str, "bg_color":str, "accent_color":str}
+        background_color: Optional JSON RGB array e.g. "[0.05, 0.05, 0.08]"
+        accent_color: Optional JSON RGB array e.g. "[0.3, 0.5, 1.0]"
+
+    Returns JSON: {"video_url": str, "device": str, "animation": str, "duration": float}
+               or {"image_url": str, "device": str, "animation": "static"}
+    """
+    import json as _json
+
+    spec = _json.loads(screenshot_spec) if screenshot_spec else None
+    bg   = _json.loads(background_color) if background_color else None
+    acc  = _json.loads(accent_color)     if accent_color else None
+
+    return _json.dumps(await impl_generate_ui_mockup(
+        device=device,
+        animation=animation,
+        duration=duration,
+        screenshot_url=screenshot_url,
+        screenshot_spec=spec,
+        background_color=bg,
+        accent_color=acc,
+    ))
+
+
 TOOLS = [
     blender_generate_scene,
     blender_generate_thumbnail,
@@ -123,6 +167,7 @@ TOOLS = [
     blender_generate_data_viz,
     blender_generate_lower_third,
     blender_generate_latex,
+    blender_generate_ui_mockup,
 ]
 
 # ---------------------------------------------------------------------------
@@ -140,11 +185,12 @@ class DirectorState(TypedDict):
 # ---------------------------------------------------------------------------
 
 _SYSTEM = (
-    "You are a professional video production director AI with access to 6 tools that generate "
-    "3D Blender animations and Manim math animations. "
+    "You are a professional video production director AI with access to 7 tools that generate "
+    "3D Blender animations, Manim math animations, and device UI mockups. "
     "Given a creative brief, decide which tools to call and with what parameters to produce "
     "the best asset package. Call tools in a logical sequence — title cards before scenes, "
-    "lower-thirds with the host's name when mentioned, thumbnails when the channel is mentioned. "
+    "lower-thirds with the host's name when mentioned, thumbnails when the channel is mentioned, "
+    "device mockups when showcasing an app or website. "
     "After all tools have finished, write a brief summary of what was produced."
 )
 

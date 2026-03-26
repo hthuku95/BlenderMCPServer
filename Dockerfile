@@ -1,17 +1,14 @@
 FROM python:3.11-slim-bookworm
 
 # ---- System dependencies ----
-# python:3.11-slim-bookworm is pinned to Debian Bookworm (12).
-# NOTE: python:3.11-slim (unversioned) now resolves to Trixie (13), which
-# causes apt dependency conflicts when we force bookworm repos.
-# Always use the -bookworm suffix to ensure a stable, consistent base.
-#   • libgl1-mesa-glx was renamed to libgl1 in Bookworm
-#   • blender needs the non-free-firmware component enabled
-#   • cairosvg requires libcairo2 + libpango at runtime
-RUN echo "deb http://deb.debian.org/debian bookworm main contrib non-free non-free-firmware" > /etc/apt/sources.list \
+# python:3.11-slim-bookworm = Debian 12 (Bookworm) slim.
+# We ADD contrib + non-free repos without overwriting the existing sources.list
+# (overwriting loses the security + updates repos that the slim image needs).
+# blender and ffmpeg require contrib/non-free for full codec support.
+RUN sed -i 's/ main/ main contrib non-free non-free-firmware/g' /etc/apt/sources.list \
     && apt-get update \
     && apt-get install -y --no-install-recommends \
-        # Blender headless (requires contrib/non-free on Bookworm)
+        # Blender headless
         blender \
         # OpenGL — libgl1 replaces libgl1-mesa-glx in Bookworm
         libgl1 \
@@ -21,7 +18,7 @@ RUN echo "deb http://deb.debian.org/debian bookworm main contrib non-free non-fr
         libegl1 \
         # Virtual framebuffer (Blender needs a display even in --background mode)
         xvfb \
-        # Minimal TeX Live for Manim (NOT the full 4 GB meta-package)
+        # Minimal TeX Live for Manim
         texlive-latex-base \
         texlive-fonts-recommended \
         texlive-latex-extra \
@@ -31,14 +28,13 @@ RUN echo "deb http://deb.debian.org/debian bookworm main contrib non-free non-fr
         libcairo2 \
         libpango-1.0-0 \
         libpangocairo-1.0-0 \
-        # Cairo dev headers — required to build pycairo from source (no wheel)
+        # Cairo dev headers + build tools — needed to compile pycairo (no wheel)
         libcairo2-dev \
         pkg-config \
-        # Build tools — needed for pycairo and any other C-extension pip packages
         gcc \
         g++ \
         python3-dev \
-        # FFmpeg — used by MoviePy and Manim video rendering
+        # FFmpeg — used by MoviePy and Manim
         ffmpeg \
         # Utilities
         curl \

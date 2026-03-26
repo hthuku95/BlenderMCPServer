@@ -40,12 +40,13 @@ total_frames = int(duration * fps)
 scene.frame_start = 1
 scene.frame_end = total_frames
 scene.render.fps = fps
-scene.render.resolution_x = 1920
-scene.render.resolution_y = 1080
+scene.render.resolution_x = 1280
+scene.render.resolution_y = 720
+scene.render.engine = "BLENDER_WORKBENCH"  # Fast CPU-only
 scene.render.image_settings.file_format = "FFMPEG"
 scene.render.ffmpeg.format = "MPEG4"
 scene.render.ffmpeg.codec = "H264"
-scene.render.ffmpeg.constant_rate_factor = "HIGH"
+scene.render.ffmpeg.constant_rate_factor = "MEDIUM"
 scene.render.filepath = output_path
 
 bpy.ops.object.select_all(action="SELECT")

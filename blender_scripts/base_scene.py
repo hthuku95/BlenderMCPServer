@@ -4,7 +4,7 @@ base_scene.py — Template bpy script for procedural 3D clip generation.
 Usage (called by blender_runner.py):
     blender --background --python base_scene.py -- '{"prompt":"ocean waves","duration":10,"style":"cinematic","output_path":"/tmp/out.mp4"}'
 
-Prints: RESULT:{"output_path": "/tmp/out.mp4", "duration": 10, "resolution": "1920x1080", "frames": 240}
+Prints: RESULT:{"output_path": "/tmp/out.mp4", "duration": 10, "resolution": "1280x720", "frames": 240}
 """
 
 import sys
@@ -37,15 +37,19 @@ total_frames = int(duration * fps)
 scene.frame_start = 1
 scene.frame_end = total_frames
 scene.render.fps = fps
-scene.render.resolution_x = 1920
-scene.render.resolution_y = 1080
+scene.render.resolution_x = 1280
+scene.render.resolution_y = 720
 scene.render.resolution_percentage = 100
+
+# Use WORKBENCH for fast CPU-only headless rendering on Render.com (no GPU).
+# EEVEE via Mesa software OpenGL is too slow on 1 vCPU.
+scene.render.engine = "BLENDER_WORKBENCH"
 
 # ---- Output settings: MP4 via FFmpeg ----
 scene.render.image_settings.file_format = "FFMPEG"
 scene.render.ffmpeg.format = "MPEG4"
 scene.render.ffmpeg.codec = "H264"
-scene.render.ffmpeg.constant_rate_factor = "HIGH"  # good quality
+scene.render.ffmpeg.constant_rate_factor = "MEDIUM"
 scene.render.filepath = output_path
 
 # ---- Clear default scene ----

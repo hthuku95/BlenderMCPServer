@@ -31,6 +31,7 @@ scene = bpy.context.scene
 scene.render.resolution_x = 1280
 scene.render.resolution_y = 720
 scene.render.resolution_percentage = 100
+scene.render.engine = "BLENDER_WORKBENCH"  # Fast CPU-only rendering
 scene.render.image_settings.file_format = "PNG"
 scene.render.filepath = output_path
 scene.frame_set(1)

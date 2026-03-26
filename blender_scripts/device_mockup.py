@@ -60,11 +60,9 @@ scene.frame_end = 1 if IS_STATIC else TOTAL_FRAMES
 
 # Output format
 render = scene.render
-render.resolution_x = 1920
-render.resolution_y = 1080
-render.engine = "CYCLES"
-scene.cycles.samples = 128
-scene.cycles.use_denoising = True
+render.resolution_x = 1280
+render.resolution_y = 720
+render.engine = "BLENDER_WORKBENCH"  # Fast CPU-only rendering
 
 if IS_STATIC:
     render.image_settings.file_format = "PNG"

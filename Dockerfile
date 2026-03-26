@@ -27,10 +27,17 @@ RUN echo "deb http://deb.debian.org/debian bookworm main contrib non-free non-fr
         texlive-latex-extra \
         dvisvgm \
         dvipng \
-        # Cairo + Pango — required by cairosvg and Manim
+        # Cairo + Pango — runtime libraries for cairosvg and Manim
         libcairo2 \
         libpango-1.0-0 \
         libpangocairo-1.0-0 \
+        # Cairo dev headers — required to build pycairo from source (no wheel)
+        libcairo2-dev \
+        pkg-config \
+        # Build tools — needed for pycairo and any other C-extension pip packages
+        gcc \
+        g++ \
+        python3-dev \
         # FFmpeg — used by MoviePy and Manim video rendering
         ffmpeg \
         # Utilities

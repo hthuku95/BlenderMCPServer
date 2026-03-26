@@ -1,7 +1,10 @@
-FROM python:3.11-slim
+FROM python:3.11-slim-bookworm
 
 # ---- System dependencies ----
-# python:3.11-slim is Debian Bookworm.
+# python:3.11-slim-bookworm is pinned to Debian Bookworm (12).
+# NOTE: python:3.11-slim (unversioned) now resolves to Trixie (13), which
+# causes apt dependency conflicts when we force bookworm repos.
+# Always use the -bookworm suffix to ensure a stable, consistent base.
 #   • libgl1-mesa-glx was renamed to libgl1 in Bookworm
 #   • blender needs the non-free-firmware component enabled
 #   • cairosvg requires libcairo2 + libpango at runtime

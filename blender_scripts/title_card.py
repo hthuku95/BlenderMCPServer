@@ -74,7 +74,7 @@ bar_mat = bpy.data.materials.new("BarMat")
 bar_mat.use_nodes = True
 b_bsdf = bar_mat.node_tree.nodes["Principled BSDF"]
 b_bsdf.inputs["Base Color"].default_value = p["accent"]
-b_bsdf.inputs["Emission Color"].default_value = p["accent"]
+b_bsdf.inputs["Emission"].default_value = p["accent"]
 b_bsdf.inputs["Emission Strength"].default_value = 3.0
 bar.data.materials.append(bar_mat)
 
@@ -93,7 +93,7 @@ title_mat = bpy.data.materials.new("TitleMat")
 title_mat.use_nodes = True
 t_bsdf = title_mat.node_tree.nodes["Principled BSDF"]
 t_bsdf.inputs["Base Color"].default_value = p["text"]
-t_bsdf.inputs["Emission Color"].default_value = p["text"]
+t_bsdf.inputs["Emission"].default_value = p["text"]
 t_bsdf.inputs["Emission Strength"].default_value = 0.8
 title_obj.data.materials.append(title_mat)
 
@@ -113,7 +113,7 @@ if subtitle:
     sub_mat.use_nodes = True
     s_bsdf = sub_mat.node_tree.nodes["Principled BSDF"]
     s_bsdf.inputs["Base Color"].default_value = p["accent"]
-    s_bsdf.inputs["Emission Color"].default_value = p["accent"]
+    s_bsdf.inputs["Emission"].default_value = p["accent"]
     s_bsdf.inputs["Emission Strength"].default_value = 1.2
     sub_obj.data.materials.append(sub_mat)
 

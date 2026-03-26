@@ -86,7 +86,7 @@ accent_mat = bpy.data.materials.new("Accent")
 accent_mat.use_nodes = True
 bsdf = accent_mat.node_tree.nodes["Principled BSDF"]
 bsdf.inputs["Base Color"].default_value = preset["accent"]
-bsdf.inputs["Emission Color"].default_value = preset["accent"]
+bsdf.inputs["Emission"].default_value = preset["accent"]
 bsdf.inputs["Emission Strength"].default_value = 2.0
 
 NUM_ORBS = 5

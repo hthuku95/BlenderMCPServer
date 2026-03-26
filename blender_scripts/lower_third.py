@@ -91,7 +91,7 @@ p_mat = bpy.data.materials.new("Panel")
 p_mat.use_nodes = True
 p_bsdf = p_mat.node_tree.nodes["Principled BSDF"]
 p_bsdf.inputs["Base Color"].default_value = p["panel"]
-p_bsdf.inputs["Emission Color"].default_value = p["panel"]
+p_bsdf.inputs["Emission"].default_value = p["panel"]
 p_bsdf.inputs["Emission Strength"].default_value = 2.5
 panel.data.materials.append(p_mat)
 
@@ -107,7 +107,7 @@ s_mat = bpy.data.materials.new("Stripe")
 s_mat.use_nodes = True
 s_bsdf = s_mat.node_tree.nodes["Principled BSDF"]
 s_bsdf.inputs["Base Color"].default_value = p["accent"]
-s_bsdf.inputs["Emission Color"].default_value = p["accent"]
+s_bsdf.inputs["Emission"].default_value = p["accent"]
 s_bsdf.inputs["Emission Strength"].default_value = 4.0
 stripe.data.materials.append(s_mat)
 
@@ -126,7 +126,7 @@ n_mat = bpy.data.materials.new("NameMat")
 n_mat.use_nodes = True
 n_bsdf = n_mat.node_tree.nodes["Principled BSDF"]
 n_bsdf.inputs["Base Color"].default_value = p["text"]
-n_bsdf.inputs["Emission Color"].default_value = p["text"]
+n_bsdf.inputs["Emission"].default_value = p["text"]
 n_bsdf.inputs["Emission Strength"].default_value = 3.0
 name_obj.data.materials.append(n_mat)
 
@@ -146,7 +146,7 @@ if subtitle_text:
     sub_mat.use_nodes = True
     sb_bsdf = sub_mat.node_tree.nodes["Principled BSDF"]
     sb_bsdf.inputs["Base Color"].default_value = p["accent"]
-    sb_bsdf.inputs["Emission Color"].default_value = p["accent"]
+    sb_bsdf.inputs["Emission"].default_value = p["accent"]
     sb_bsdf.inputs["Emission Strength"].default_value = 2.0
     sub_obj.data.materials.append(sub_mat)
 

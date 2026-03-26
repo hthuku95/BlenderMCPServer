@@ -68,7 +68,7 @@ for i in range(3):
     bsdf.inputs["Base Color"].default_value = color
     bsdf.inputs["Metallic"].default_value = 0.7
     bsdf.inputs["Roughness"].default_value = 0.2
-    bsdf.inputs["Emission Color"].default_value = color
+    bsdf.inputs["Emission"].default_value = color
     bsdf.inputs["Emission Strength"].default_value = 0.4
     slab.data.materials.append(mat)
 
@@ -104,7 +104,7 @@ if title_text:
     txt_mat.use_nodes = True
     t_bsdf = txt_mat.node_tree.nodes["Principled BSDF"]
     t_bsdf.inputs["Base Color"].default_value = (1.0, 1.0, 1.0, 1.0)
-    t_bsdf.inputs["Emission Color"].default_value = (1.0, 1.0, 1.0, 1.0)
+    t_bsdf.inputs["Emission"].default_value = (1.0, 1.0, 1.0, 1.0)
     t_bsdf.inputs["Emission Strength"].default_value = 1.5
     txt.data.materials.append(txt_mat)
 

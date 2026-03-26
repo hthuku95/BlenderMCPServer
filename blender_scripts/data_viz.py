@@ -101,7 +101,7 @@ for i, (label, value) in enumerate(zip(labels, values)):
     bsdf.inputs["Base Color"].default_value = color
     bsdf.inputs["Metallic"].default_value = 0.3
     bsdf.inputs["Roughness"].default_value = 0.3
-    bsdf.inputs["Emission Color"].default_value = color
+    bsdf.inputs["Emission"].default_value = color
     bsdf.inputs["Emission Strength"].default_value = 0.6
     bar.data.materials.append(mat)
 
@@ -115,7 +115,7 @@ for i, (label, value) in enumerate(zip(labels, values)):
     lbl_mat.use_nodes = True
     l_bsdf = lbl_mat.node_tree.nodes["Principled BSDF"]
     l_bsdf.inputs["Base Color"].default_value = (0.85, 0.85, 0.85, 1.0)
-    l_bsdf.inputs["Emission Color"].default_value = (0.85, 0.85, 0.85, 1.0)
+    l_bsdf.inputs["Emission"].default_value = (0.85, 0.85, 0.85, 1.0)
     l_bsdf.inputs["Emission Strength"].default_value = 0.5
     lbl.data.materials.append(lbl_mat)
 
@@ -130,7 +130,7 @@ for i, (label, value) in enumerate(zip(labels, values)):
     val_mat.use_nodes = True
     v_bsdf = val_mat.node_tree.nodes["Principled BSDF"]
     v_bsdf.inputs["Base Color"].default_value = color
-    v_bsdf.inputs["Emission Color"].default_value = color
+    v_bsdf.inputs["Emission"].default_value = color
     v_bsdf.inputs["Emission Strength"].default_value = 1.2
     val_lbl.data.materials.append(val_mat)
 
@@ -154,7 +154,7 @@ if title:
     t_mat.use_nodes = True
     t_bsdf = t_mat.node_tree.nodes["Principled BSDF"]
     t_bsdf.inputs["Base Color"].default_value = (1.0, 1.0, 1.0, 1.0)
-    t_bsdf.inputs["Emission Color"].default_value = (1.0, 1.0, 1.0, 1.0)
+    t_bsdf.inputs["Emission"].default_value = (1.0, 1.0, 1.0, 1.0)
     t_bsdf.inputs["Emission Strength"].default_value = 1.0
     t_obj.data.materials.append(t_mat)
 

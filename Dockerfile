@@ -18,6 +18,8 @@ RUN echo "deb http://deb.debian.org/debian bookworm contrib non-free non-free-fi
         libegl1 \
         # Virtual framebuffer (Blender needs a display even in --background mode)
         xvfb \
+        # xvfb-run requires xauth to set up X11 authorization cookies
+        xauth \
         # Minimal TeX Live for Manim
         texlive-latex-base \
         texlive-fonts-recommended \

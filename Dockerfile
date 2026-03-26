@@ -52,5 +52,5 @@ RUN mkdir -p /tmp/blender_renders
 # Expose MCP + REST port
 EXPOSE 8000
 
-# Start with xvfb-run so Blender has a virtual display
-CMD ["xvfb-run", "-a", "python", "server.py"]
+# Start uvicorn server directly — xvfb is invoked per-render in blender_runner.py
+CMD ["python", "server.py"]

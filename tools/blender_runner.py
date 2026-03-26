@@ -38,7 +38,9 @@ async def run_blender_script(
     _syntax_check(script_path)
 
     args_json = json.dumps(args)
+    # Use xvfb-run to provide a virtual display for Blender (required even in --background mode)
     proc = await asyncio.create_subprocess_exec(
+        "xvfb-run", "-a",
         BLENDER_BIN,
         "--background",
         "--python", script_path,

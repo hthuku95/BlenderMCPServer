@@ -1,16 +1,16 @@
-FROM python:3.11-slim-bookworm
+FROM python:3.11-bookworm
 
 # ---- System dependencies ----
-# python:3.11-slim-bookworm = Debian 12 (Bookworm) slim.
-# We ADD contrib + non-free repos without overwriting the existing sources.list
-# (overwriting loses the security + updates repos that the slim image needs).
-# blender and ffmpeg require contrib/non-free for full codec support.
-RUN sed -i 's/ main/ main contrib non-free non-free-firmware/g' /etc/apt/sources.list \
+# python:3.11-bookworm = Debian 12 (Bookworm) full image.
+# Using full (non-slim) to ensure all system libs are available for blender.
+# We ADD contrib + non-free without touching the existing sources.list so
+# security + updates repos remain intact.
+RUN echo "deb http://deb.debian.org/debian bookworm contrib non-free non-free-firmware" \
+        > /etc/apt/sources.list.d/bookworm-nonfree.list \
     && apt-get update \
     && apt-get install -y --no-install-recommends \
         # Blender headless
         blender \
-        # OpenGL — libgl1 replaces libgl1-mesa-glx in Bookworm
         libgl1 \
         libglib2.0-0 \
         libgomp1 \
@@ -28,12 +28,9 @@ RUN sed -i 's/ main/ main contrib non-free non-free-firmware/g' /etc/apt/sources
         libcairo2 \
         libpango-1.0-0 \
         libpangocairo-1.0-0 \
-        # Cairo dev headers + build tools — needed to compile pycairo (no wheel)
+        # Cairo dev headers + build tools — required to compile pycairo (no wheel)
         libcairo2-dev \
         pkg-config \
-        gcc \
-        g++ \
-        python3-dev \
         # FFmpeg — used by MoviePy and Manim
         ffmpeg \
         # Utilities

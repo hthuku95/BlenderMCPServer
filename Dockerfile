@@ -28,8 +28,9 @@ RUN echo "deb http://deb.debian.org/debian bookworm contrib non-free non-free-fi
         libcairo2 \
         libpango-1.0-0 \
         libpangocairo-1.0-0 \
-        # Cairo dev headers + build tools — required to compile pycairo (no wheel)
+        # Cairo + Pango dev headers — required to compile pycairo and manim (no wheel)
         libcairo2-dev \
+        libpango1.0-dev \
         pkg-config \
         # FFmpeg — used by MoviePy and Manim
         ffmpeg \

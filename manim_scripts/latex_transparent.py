@@ -23,6 +23,27 @@ import os
 
 from manim import *
 
+# Custom TeX template using only packages in our minimal TeX Live install.
+# Avoids calligra / tipa / wasysym / dsfont (texlive-fonts-extra, not installed).
+_MATH_TEMPLATE = TexTemplate(
+    tex_compiler="latex",
+    output_format=".dvi",
+    preamble=r"""
+\usepackage[english]{babel}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{amsfonts}
+\usepackage{setspace}
+\usepackage{relsize}
+\usepackage{textcomp}
+\usepackage{ragged2e}
+\usepackage{microtype}
+\usepackage{physics}
+\usepackage{xcolor}
+\usepackage[utf8]{inputenc}
+""",
+)
+
 
 def _load_args() -> dict:
     raw = os.environ.get("LATEX_SCENE_ARGS", "{}")
@@ -52,7 +73,7 @@ class LatexTransparent(Scene):
             expr = rf"\[ {expr} \]"
 
         # White equation on transparent background
-        eq = MathTex(expr, color=WHITE)
+        eq = MathTex(expr, color=WHITE, tex_template=_MATH_TEMPLATE)
         eq.scale_to_fit_width(config.frame_width * 0.85)
 
         if anim_type == "appear":
@@ -67,12 +88,12 @@ class LatexTransparent(Scene):
                 self.play(Write(eq), run_time=duration * 0.4)
                 self.wait(duration * 0.6)
             else:
-                first = MathTex(parts[0], color=WHITE).scale_to_fit_width(
+                first = MathTex(parts[0], color=WHITE, tex_template=_MATH_TEMPLATE).scale_to_fit_width(
                     config.frame_width * 0.85
                 )
                 self.play(Write(first), run_time=duration * 0.3)
                 for part in parts[1:]:
-                    next_eq = MathTex(part, color=WHITE).scale_to_fit_width(
+                    next_eq = MathTex(part, color=WHITE, tex_template=_MATH_TEMPLATE).scale_to_fit_width(
                         config.frame_width * 0.85
                     )
                     self.play(
@@ -94,7 +115,7 @@ class LatexTransparent(Scene):
                 x_cursor = -config.frame_width / 2 + 0.5
 
                 for term in terms:
-                    t_mob = MathTex(term, color=WHITE)
+                    t_mob = MathTex(term, color=WHITE, tex_template=_MATH_TEMPLATE)
                     t_mob.next_to(revealed, RIGHT, buff=0.15) if len(revealed) > 0 else t_mob.move_to(
                         LEFT * (config.frame_width / 2 - 0.5)
                     )

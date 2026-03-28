@@ -73,7 +73,7 @@ async def latex_to_svg(latex_expression: str, output_path: str | None = None) ->
         svg_proc = await asyncio.create_subprocess_exec(
             "dvisvgm",
             "--no-fonts",        # embed glyphs as paths (no font deps)
-            "--output", stable_svg,
+            f"--output={stable_svg}",   # dvisvgm 3.x requires = form
             str(dvi_file),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,

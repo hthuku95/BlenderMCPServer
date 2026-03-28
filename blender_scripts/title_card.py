@@ -38,6 +38,10 @@ scene.render.fps = fps
 scene.render.resolution_x = 1280
 scene.render.resolution_y = 720
 scene.render.engine = "BLENDER_WORKBENCH"  # Fast CPU-only
+scene.display.shading.color_type = 'MATERIAL'  # CRITICAL: read mat.diffuse_color
+scene.display.shading.light = 'STUDIO'
+scene.display.shading.show_shadows = True
+scene.display.shading.shadow_intensity = 0.3
 scene.render.image_settings.file_format = "FFMPEG"
 scene.render.ffmpeg.format = "MPEG4"
 scene.render.ffmpeg.codec = "H264"
@@ -77,6 +81,7 @@ b_bsdf = bar_mat.node_tree.nodes["Principled BSDF"]
 b_bsdf.inputs["Base Color"].default_value = p["accent"]
 b_bsdf.inputs["Emission"].default_value = p["accent"]
 b_bsdf.inputs["Emission Strength"].default_value = 3.0
+bar_mat.diffuse_color = p["accent"]
 bar.data.materials.append(bar_mat)
 
 # Main title — slides in from left (frames 6–18)
@@ -96,6 +101,7 @@ t_bsdf = title_mat.node_tree.nodes["Principled BSDF"]
 t_bsdf.inputs["Base Color"].default_value = p["text"]
 t_bsdf.inputs["Emission"].default_value = p["text"]
 t_bsdf.inputs["Emission Strength"].default_value = 0.8
+title_mat.diffuse_color = p["text"]
 title_obj.data.materials.append(title_mat)
 
 # Subtitle — slides in after title (frames 12–24)
@@ -116,6 +122,7 @@ if subtitle:
     s_bsdf.inputs["Base Color"].default_value = p["accent"]
     s_bsdf.inputs["Emission"].default_value = p["accent"]
     s_bsdf.inputs["Emission Strength"].default_value = 1.2
+    sub_mat.diffuse_color = p["accent"]
     sub_obj.data.materials.append(sub_mat)
 
 # Subtle background geometric accent (low-poly diamond)
@@ -130,6 +137,7 @@ g_bsdf.inputs["Metallic"].default_value = 1.0
 g_bsdf.inputs["Roughness"].default_value = 0.05
 g_bsdf.inputs["Alpha"].default_value = 0.15
 gem_mat.blend_method = "BLEND"
+gem_mat.diffuse_color = (p["accent"][0], p["accent"][1], p["accent"][2], 0.15)
 gem.data.materials.append(gem_mat)
 
 # Lighting

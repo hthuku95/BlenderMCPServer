@@ -43,6 +43,10 @@ scene.render.fps = fps
 scene.render.resolution_x = 1280
 scene.render.resolution_y = 720
 scene.render.engine = "BLENDER_WORKBENCH"  # Fast CPU-only
+scene.display.shading.color_type = 'MATERIAL'  # CRITICAL: read mat.diffuse_color
+scene.display.shading.light = 'STUDIO'
+scene.display.shading.show_shadows = True
+scene.display.shading.shadow_intensity = 0.2
 scene.render.image_settings.file_format = "FFMPEG"
 scene.render.ffmpeg.format = "MPEG4"
 scene.render.ffmpeg.codec = "H264"
@@ -59,7 +63,7 @@ world.use_nodes = True
 bg = world.node_tree.nodes.get("Background")
 if bg:
     bg.inputs["Color"].default_value = (0.02, 0.02, 0.05, 1.0)
-    bg.inputs["Strength"].default_value = 0.4
+    bg.inputs["Strength"].default_value = 1.0
 
 # Colour palette (cycles)
 COLORS = [
@@ -104,6 +108,7 @@ for i, (label, value) in enumerate(zip(labels, values)):
     bsdf.inputs["Roughness"].default_value = 0.3
     bsdf.inputs["Emission"].default_value = color
     bsdf.inputs["Emission Strength"].default_value = 0.6
+    mat.diffuse_color = color  # Workbench reads this
     bar.data.materials.append(mat)
 
     # Label below bar
@@ -118,6 +123,7 @@ for i, (label, value) in enumerate(zip(labels, values)):
     l_bsdf.inputs["Base Color"].default_value = (0.85, 0.85, 0.85, 1.0)
     l_bsdf.inputs["Emission"].default_value = (0.85, 0.85, 0.85, 1.0)
     l_bsdf.inputs["Emission Strength"].default_value = 0.5
+    lbl_mat.diffuse_color = (0.85, 0.85, 0.85, 1.0)
     lbl.data.materials.append(lbl_mat)
 
     # Value label that appears above bar when fully grown
@@ -133,6 +139,7 @@ for i, (label, value) in enumerate(zip(labels, values)):
     v_bsdf.inputs["Base Color"].default_value = color
     v_bsdf.inputs["Emission"].default_value = color
     v_bsdf.inputs["Emission Strength"].default_value = 1.2
+    val_mat.diffuse_color = color
     val_lbl.data.materials.append(val_mat)
 
 # Floor grid
@@ -142,6 +149,7 @@ fl_mat = bpy.data.materials.new("Floor")
 fl_mat.use_nodes = True
 fl_mat.node_tree.nodes["Principled BSDF"].inputs["Base Color"].default_value = (0.03, 0.03, 0.07, 1.0)
 fl_mat.node_tree.nodes["Principled BSDF"].inputs["Roughness"].default_value = 0.95
+fl_mat.diffuse_color = (0.03, 0.03, 0.07, 1.0)
 floor.data.materials.append(fl_mat)
 
 # Chart title
@@ -157,6 +165,7 @@ if title:
     t_bsdf.inputs["Base Color"].default_value = (1.0, 1.0, 1.0, 1.0)
     t_bsdf.inputs["Emission"].default_value = (1.0, 1.0, 1.0, 1.0)
     t_bsdf.inputs["Emission Strength"].default_value = 1.0
+    t_mat.diffuse_color = (1.0, 1.0, 1.0, 1.0)
     t_obj.data.materials.append(t_mat)
 
 # Lighting

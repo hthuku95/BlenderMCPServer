@@ -41,6 +41,8 @@ scene.render.fps = fps
 scene.render.resolution_x = 1280
 scene.render.resolution_y = 720
 scene.render.engine = "BLENDER_WORKBENCH"  # Fast CPU-only
+scene.display.shading.color_type = 'MATERIAL'  # CRITICAL: read mat.diffuse_color
+scene.display.shading.light = 'FLAT'  # Flat lighting — best for green-screen overlays
 scene.render.image_settings.file_format = "FFMPEG"
 scene.render.ffmpeg.format = "MPEG4"
 scene.render.ffmpeg.codec = "H264"
@@ -94,6 +96,7 @@ p_bsdf = p_mat.node_tree.nodes["Principled BSDF"]
 p_bsdf.inputs["Base Color"].default_value = p["panel"]
 p_bsdf.inputs["Emission"].default_value = p["panel"]
 p_bsdf.inputs["Emission Strength"].default_value = 2.5
+p_mat.diffuse_color = p["panel"]
 panel.data.materials.append(p_mat)
 
 # Left accent stripe
@@ -110,6 +113,7 @@ s_bsdf = s_mat.node_tree.nodes["Principled BSDF"]
 s_bsdf.inputs["Base Color"].default_value = p["accent"]
 s_bsdf.inputs["Emission"].default_value = p["accent"]
 s_bsdf.inputs["Emission Strength"].default_value = 4.0
+s_mat.diffuse_color = p["accent"]
 stripe.data.materials.append(s_mat)
 
 # Name text
@@ -129,6 +133,7 @@ n_bsdf = n_mat.node_tree.nodes["Principled BSDF"]
 n_bsdf.inputs["Base Color"].default_value = p["text"]
 n_bsdf.inputs["Emission"].default_value = p["text"]
 n_bsdf.inputs["Emission Strength"].default_value = 3.0
+n_mat.diffuse_color = p["text"]
 name_obj.data.materials.append(n_mat)
 
 # Subtitle text
@@ -149,6 +154,7 @@ if subtitle_text:
     sb_bsdf.inputs["Base Color"].default_value = p["accent"]
     sb_bsdf.inputs["Emission"].default_value = p["accent"]
     sb_bsdf.inputs["Emission Strength"].default_value = 2.0
+    sub_mat.diffuse_color = p["accent"]
     sub_obj.data.materials.append(sub_mat)
 
 # Flat area light (bright, directionless — avoids shadows on green bg)

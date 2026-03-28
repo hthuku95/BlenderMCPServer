@@ -31,7 +31,19 @@ scene = bpy.context.scene
 scene.render.resolution_x = 1280
 scene.render.resolution_y = 720
 scene.render.resolution_percentage = 100
-scene.render.engine = "BLENDER_WORKBENCH"  # Fast CPU-only rendering
+# Thumbnail is a single still frame — use Cycles CPU for photorealistic quality.
+# 128 samples + OIDN denoising ≈ 45s on 1 vCPU, which is acceptable.
+scene.render.engine = "CYCLES"
+scene.cycles.device = "CPU"
+scene.cycles.samples = 128
+scene.cycles.use_denoising = True
+scene.cycles.denoiser = "OPENIMAGEDENOISE"
+try:
+    _cprefs = bpy.context.preferences.addons["cycles"].preferences
+    _cprefs.get_devices()
+    _cprefs.compute_device_type = "NONE"
+except Exception:
+    pass
 scene.render.image_settings.file_format = "PNG"
 scene.render.filepath = output_path
 scene.frame_set(1)
@@ -71,6 +83,7 @@ for i in range(3):
     bsdf.inputs["Roughness"].default_value = 0.2
     bsdf.inputs["Emission"].default_value = color
     bsdf.inputs["Emission Strength"].default_value = 0.4
+    mat.diffuse_color = color
     slab.data.materials.append(mat)
 
 # Hero sphere (right side)
@@ -80,8 +93,11 @@ sph_mat = bpy.data.materials.new("Hero")
 sph_mat.use_nodes = True
 s_bsdf = sph_mat.node_tree.nodes["Principled BSDF"]
 s_bsdf.inputs["Base Color"].default_value = p["accent"]
-s_bsdf.inputs["Metallic"].default_value = 1.0
-s_bsdf.inputs["Roughness"].default_value = 0.05
+s_bsdf.inputs["Metallic"].default_value = 0.8
+s_bsdf.inputs["Roughness"].default_value = 0.1
+s_bsdf.inputs["Emission"].default_value = p["accent"]
+s_bsdf.inputs["Emission Strength"].default_value = 0.5
+sph_mat.diffuse_color = p["accent"]
 sphere.data.materials.append(sph_mat)
 
 # Floor plane

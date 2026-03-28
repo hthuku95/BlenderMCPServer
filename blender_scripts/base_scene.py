@@ -43,7 +43,13 @@ scene.render.resolution_percentage = 100
 
 # Use WORKBENCH for fast CPU-only headless rendering on Render.com (no GPU).
 # EEVEE via Mesa software OpenGL is too slow on 1 vCPU.
+# CRITICAL: set color_type='MATERIAL' so Workbench reads mat.diffuse_color
+# instead of defaulting to random/grey. Without this every object renders grey.
 scene.render.engine = "BLENDER_WORKBENCH"
+scene.display.shading.color_type = 'MATERIAL'
+scene.display.shading.light = 'STUDIO'
+scene.display.shading.show_shadows = True
+scene.display.shading.shadow_intensity = 0.3
 
 # ---- Output settings: MP4 via FFmpeg ----
 scene.render.image_settings.file_format = "FFMPEG"
@@ -72,7 +78,7 @@ world.use_nodes = True
 bg_node = world.node_tree.nodes.get("Background")
 if bg_node:
     bg_node.inputs["Color"].default_value = preset["sky_color"]
-    bg_node.inputs["Strength"].default_value = 0.5
+    bg_node.inputs["Strength"].default_value = 1.0
 
 # ---- Floor plane ----
 bpy.ops.mesh.primitive_plane_add(size=20, location=(0, 0, 0))
@@ -83,6 +89,7 @@ floor_mat.node_tree.nodes["Principled BSDF"].inputs["Base Color"].default_value 
     0.05, 0.05, 0.08, 1.0
 )
 floor_mat.node_tree.nodes["Principled BSDF"].inputs["Roughness"].default_value = 0.8
+floor_mat.diffuse_color = (0.05, 0.05, 0.08, 1.0)  # Workbench reads this
 floor.data.materials.append(floor_mat)
 
 # ---- Accent spheres that orbit ----
@@ -92,6 +99,7 @@ bsdf = accent_mat.node_tree.nodes["Principled BSDF"]
 bsdf.inputs["Base Color"].default_value = preset["accent"]
 bsdf.inputs["Emission"].default_value = preset["accent"]
 bsdf.inputs["Emission Strength"].default_value = 2.0
+accent_mat.diffuse_color = preset["accent"]  # Workbench reads this
 
 NUM_ORBS = 5
 for i in range(NUM_ORBS):
@@ -121,6 +129,7 @@ c_bsdf = center_mat.node_tree.nodes["Principled BSDF"]
 c_bsdf.inputs["Base Color"].default_value = preset["accent"]
 c_bsdf.inputs["Metallic"].default_value = 0.9
 c_bsdf.inputs["Roughness"].default_value = 0.1
+center_mat.diffuse_color = preset["accent"]  # Workbench reads this
 center.data.materials.append(center_mat)
 
 # Slow rotation on center object

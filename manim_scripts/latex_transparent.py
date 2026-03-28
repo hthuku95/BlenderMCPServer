@@ -23,24 +23,17 @@ import os
 
 from manim import *
 
-# Custom TeX template using only packages in our minimal TeX Live install.
-# Avoids calligra / tipa / wasysym / dsfont (texlive-fonts-extra, not installed).
+# Minimal TeX template — uses only packages guaranteed by texlive-latex-base.
+# Avoids calligra/tipa/wasysym/dsfont/physics which require texlive-fonts-extra
+# or texlive-science (not reliably available on all Render builds).
+# amsmath provides \int, \frac, \sqrt, \infty; amssymb adds extra symbols.
 _MATH_TEMPLATE = TexTemplate(
     tex_compiler="latex",
     output_format=".dvi",
     preamble=r"""
-\usepackage[english]{babel}
 \usepackage{amsmath}
 \usepackage{amssymb}
-\usepackage{amsfonts}
-\usepackage{setspace}
-\usepackage{relsize}
-\usepackage{textcomp}
-\usepackage{ragged2e}
-\usepackage{microtype}
-\usepackage{physics}
 \usepackage{xcolor}
-\usepackage[utf8]{inputenc}
 """,
 )
 

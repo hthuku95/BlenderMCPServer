@@ -191,7 +191,9 @@ async def _option_b_node(state: LatexState) -> LatexState:
 
 
 def _route(state: LatexState) -> Literal["option_a", "option_b"]:
-    return "option_a" if state.get("chosen_option") == "A" else "option_b"
+    # Option A (SVG→Blender 3D) disabled — dvisvgm-generated paths produce no
+    # Curve objects in Blender 3.4's SVG importer.  Always use Option B (Manim).
+    return "option_b"
 
 
 # ---------------------------------------------------------------------------

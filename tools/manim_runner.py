@@ -73,9 +73,20 @@ async def run_manim_scene(
         stderr = stderr_b.decode("utf-8", errors="replace")
 
         if proc.returncode != 0:
+            # Capture TeX log files for LaTeX error diagnostics
+            tex_log = ""
+            for root, _, files in os.walk(work_dir):
+                for fname in files:
+                    if fname.endswith(".log"):
+                        try:
+                            with open(os.path.join(root, fname)) as lf:
+                                tex_log = f"\nTeX log ({fname}, last 2000):\n{lf.read()[-2000:]}"
+                        except Exception:
+                            pass
             raise RuntimeError(
                 f"Manim failed (exit {proc.returncode}).\n"
                 f"STDERR (last 2000 chars):\n{stderr[-2000:]}"
+                + tex_log
             )
 
         # With --transparent, Manim may produce .mov instead of .mp4

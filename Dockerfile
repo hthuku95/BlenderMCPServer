@@ -20,11 +20,13 @@ RUN echo "deb http://deb.debian.org/debian bookworm contrib non-free non-free-fi
         xvfb \
         # xvfb-run requires xauth to set up X11 authorization cookies
         xauth \
-        # Minimal TeX Live for Manim + LaTeX compilation
+        # TeX Live — latex-base + fonts-extra covers all Manim default template packages
+        # (tipa, mathrsfs, calligra, wasysym, dsfont required by Manim's preamble)
         texlive-latex-base \
         texlive-fonts-recommended \
         texlive-latex-extra \
         texlive-science \
+        texlive-fonts-extra \
         dvisvgm \
         dvipng \
         # Cairo + Pango — runtime libraries for cairosvg and Manim

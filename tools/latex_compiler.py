@@ -14,7 +14,6 @@ _TEMPLATE = r"""\documentclass[preview]{standalone}
 \usepackage{amsmath}
 \usepackage{amssymb}
 \usepackage{amsfonts}
-\usepackage{physics}
 \begin{document}
 %s
 \end{document}
@@ -59,9 +58,11 @@ async def latex_to_svg(latex_expression: str, output_path: str | None = None) ->
             stderr=asyncio.subprocess.PIPE,
             cwd=work_dir,
         )
-        _, stderr_b = await asyncio.wait_for(latex_proc.communicate(), timeout=30)
+        stdout_b, stderr_b = await asyncio.wait_for(latex_proc.communicate(), timeout=30)
         if latex_proc.returncode != 0:
-            raise RuntimeError(f"latex failed:\n{stderr_b.decode()[-1000:]}")
+            # LaTeX writes errors to stdout (the log), not stderr
+            log = (stdout_b.decode()[-2000:] or stderr_b.decode()[-1000:]).strip()
+            raise RuntimeError(f"latex failed:\n{log}")
 
         dvi_file = Path(work_dir) / "eq.dvi"
         if not dvi_file.exists():

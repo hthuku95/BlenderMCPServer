@@ -140,7 +140,7 @@ async def _option_b_node(state: LatexState) -> LatexState:
                 "animation_type": state.get("animation_type", "appear"),
                 "duration": duration,
             },
-            quality="medium_quality",
+            quality="m",
             output_path=eq_video,
             transparent=True,
         )

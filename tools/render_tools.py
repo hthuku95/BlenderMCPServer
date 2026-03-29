@@ -361,11 +361,174 @@ async def impl_generate_ui_mockup(
         }
 
 
+async def impl_generate_animation(
+    description: str,
+    duration: float = 10.0,
+    background_style: str = "dark",
+    composite_over_scene: bool = True,
+) -> dict:
+    """
+    Generate any Manim animation from a natural language description.
+
+    Uses LLM code generation — the agent can request any animation Manim supports,
+    not just the 3 hardcoded LaTeX animation types.
+
+    If composite_over_scene=True, the Manim clip (transparent bg) is composited
+    over a Blender 3D background scene for a polished final look.
+    """
+    from tools.manim_codegen import generate_and_run_manim
+    from tools.storage import upload_render
+
+    output_tmp = f"/tmp/anim_{uuid.uuid4().hex}"
+
+    if composite_over_scene:
+        # Transparent Manim clip → composite over Blender background
+        manim_path = output_tmp + "_eq.mov"
+        final_path  = output_tmp + ".mp4"
+
+        manim_path = await generate_and_run_manim(
+            description=description,
+            duration=duration,
+            background=background_style,
+            output_path=manim_path,
+            transparent=True,
+            quality="m",
+        )
+
+        # Blender background scene
+        blender_path = output_tmp + "_bg.mp4"
+        from tools.blender_runner import run_blender_script
+        blender_script = str(_ROOT / "blender_scripts" / "base_scene.py")
+        try:
+            result = await run_blender_script(
+                script_path=blender_script,
+                args={
+                    "prompt": description[:200],
+                    "duration": duration,
+                    "style": "cinematic",
+                    "output_path": blender_path,
+                },
+                timeout=600,
+            )
+            blender_path = result.get("output_path", blender_path)
+        except RuntimeError:
+            composite_over_scene = False   # fall through to plain upload
+
+        if composite_over_scene:
+            from tools.compositor import composite_manim_over_blender
+            final_path = composite_manim_over_blender(
+                blender_video_path=blender_path,
+                equation_video_path=manim_path,
+                output_path=final_path,
+                eq_x_position=0.5,
+                eq_y_position=0.5,
+                eq_scale=1.0,
+                fps=60,
+            )
+            for p in (manim_path, blender_path):
+                try:
+                    os.unlink(p)
+                except OSError:
+                    pass
+        else:
+            final_path = manim_path
+    else:
+        final_path = output_tmp + ".mp4"
+        await generate_and_run_manim(
+            description=description,
+            duration=duration,
+            background=background_style,
+            output_path=final_path,
+            transparent=False,
+            quality="m",
+        )
+
+    video_url = upload_render(final_path, prefix="animations")
+    try:
+        os.unlink(final_path)
+    except OSError:
+        pass
+
+    return {
+        "video_url": video_url,
+        "duration": duration,
+        "description": description[:200],
+        "composited": composite_over_scene,
+    }
+
+
+async def impl_generate_chart(
+    chart_type: str = "bar_chart",
+    title: str = "Data",
+    data: list | None = None,
+    labels: list | None = None,
+    duration: float = 10.0,
+    y_range: list | None = None,
+    colors: list | None = None,
+    composite_over_scene: bool = False,
+) -> dict:
+    """
+    Generate a Manim data-visualisation clip.
+
+    chart_type: "bar_chart" | "line_chart" | "pie_chart" | "counter" | "scatter"
+    data:       list of numbers (or [x,y] pairs for scatter)
+    labels:     list of strings for axis labels or legend entries
+    """
+    import json as _json
+    from tools.manim_runner import run_manim_scene
+    from tools.storage import upload_render
+
+    if data is None:
+        data = [3, 7, 5, 9, 4, 6]
+    if labels is None:
+        labels = [str(i + 1) for i in range(len(data))]
+    if y_range is None:
+        max_val = max((v if isinstance(v, (int, float)) else max(v)) for v in data) if data else 10
+        y_range = [0, max_val * 1.25, max(1, round(max_val / 5))]
+    if colors is None:
+        colors = []
+
+    scene_file = str(_ROOT / "manim_scripts" / "data_chart_scene.py")
+    output_path = f"/tmp/chart_{uuid.uuid4().hex}.mp4"
+
+    await run_manim_scene(
+        scene_file=scene_file,
+        scene_class="DataChartScene",
+        args={
+            "chart_type": chart_type,
+            "title": title,
+            "data": data,
+            "labels": labels,
+            "duration": duration,
+            "y_range": y_range,
+            "colors": colors,
+        },
+        quality="m",
+        output_path=output_path,
+        transparent=False,
+        timeout=300,
+    )
+
+    video_url = upload_render(output_path, prefix="charts")
+    try:
+        os.unlink(output_path)
+    except OSError:
+        pass
+
+    return {
+        "video_url": video_url,
+        "duration": duration,
+        "chart_type": chart_type,
+        "title": title,
+    }
+
+
 async def impl_generate_latex(
     latex_expression: str,
     animation_type: str = "appear",
     duration: float = 8.0,
     background_style: str = "dark",
+    prompt: str = "",
 ) -> dict:
     """
     Phase 2 LaTeX pipeline — routes between Option A (SVG→Blender 3D) and
@@ -382,6 +545,7 @@ async def impl_generate_latex(
         animation_type=animation_type,
         duration=duration,
         background_style=background_style,
+        prompt=prompt,
         output_path=output_path,
         option="auto",
     )

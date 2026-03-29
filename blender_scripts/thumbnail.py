@@ -35,9 +35,18 @@ scene.render.resolution_percentage = 100
 # 128 samples + OIDN denoising ≈ 45s on 1 vCPU, which is acceptable.
 scene.render.engine = "CYCLES"
 scene.cycles.device = "CPU"
-scene.cycles.samples = 128
+scene.cycles.samples = 32
 scene.cycles.use_denoising = True
-scene.cycles.denoiser = "OPENIMAGEDENOISE"
+try:
+    # OPENIMAGEDENOISE requires SSE4.1 and must be compiled into the Blender build.
+    # On some headless servers (Blender 3.4 apt package) the enum may be empty —
+    # wrap in try/except so we get denoising when available, skip it when not.
+    scene.cycles.denoiser = "OPENIMAGEDENOISE"
+except TypeError:
+    try:
+        scene.cycles.denoiser = "NLM"
+    except TypeError:
+        scene.cycles.use_denoising = False
 try:
     _cprefs = bpy.context.preferences.addons["cycles"].preferences
     _cprefs.get_devices()

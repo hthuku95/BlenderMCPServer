@@ -29,6 +29,8 @@ from starlette.responses import JSONResponse
 from starlette.routing import Mount, Route
 
 from tools.render_tools import (
+    impl_generate_animation,
+    impl_generate_chart,
     impl_generate_data_viz,
     impl_generate_latex,
     impl_generate_lower_third,
@@ -210,19 +212,105 @@ async def blender_generate_latex(
     animation_type: str = "appear",
     duration: float = 8.0,
     background_style: str = "dark",
+    prompt: str = "",
 ) -> str:
     r"""
     Generate a LaTeX/Manim math equation animation clip.
 
+    The animation is LLM-generated from a description derived from latex_expression
+    and animation_type, falling back to a static template if generation fails.
+
     Args:
         latex_expression: LaTeX string e.g. r"\frac{d}{dt}\int_a^b f(x,t)dx"
-        animation_type: "appear" | "morph" | "step_by_step"
+        animation_type: "appear" | "morph" | "step_by_step" | "custom"
         duration: Clip length in seconds
         background_style: "dark" | "light" | "transparent"
+        prompt: Optional natural-language description to override animation_type
+                e.g. "Show each step colour-coded, highlight the discriminant in red"
 
     Returns JSON: {"video_url": str, "duration": float, "latex_expression": str}
     """
-    return json.dumps(await impl_generate_latex(latex_expression, animation_type, duration, background_style))
+    return json.dumps(await impl_generate_latex(
+        latex_expression, animation_type, duration, background_style, prompt
+    ))
+
+
+@mcp.tool()
+async def blender_generate_animation(
+    description: str,
+    duration: float = 10.0,
+    background_style: str = "dark",
+    composite_over_scene: bool = True,
+) -> str:
+    """
+    Generate ANY Manim animation from a natural language description.
+
+    Unlike blender_generate_latex (which is constrained to equation animations),
+    this tool lets you describe any animation — diagrams, kinetic text, charts,
+    physics simulations, geometry proofs, code step-throughs, etc.
+
+    The LLM generates the Manim Python code, executes it in a sandbox, and retries
+    automatically on failure (up to 5 attempts).
+
+    Args:
+        description:           Natural language description of the desired animation.
+                               Be specific: colours, timing, animation style, content.
+                               Examples:
+                               - "Show a flowchart of a software deployment process with boxes and arrows"
+                               - "Animate the word INNOVATION letter by letter with each letter a different colour"
+                               - "Display a 3D rotating cube with coloured faces"
+                               - "Show Pythagoras theorem proof with a right triangle and coloured squares"
+        duration:              Clip length in seconds (3–60)
+        background_style:      "dark" | "light" | "gradient"
+        composite_over_scene:  If True, composite the animation over a 3D Blender background.
+                               Set False for a plain Manim background.
+
+    Returns JSON: {"video_url": str, "duration": float, "description": str}
+    """
+    return json.dumps(await impl_generate_animation(
+        description=description,
+        duration=duration,
+        background_style=background_style,
+        composite_over_scene=composite_over_scene,
+    ))
+
+
+@mcp.tool()
+async def blender_generate_chart(
+    chart_type: str = "bar_chart",
+    title: str = "Data Visualisation",
+    data: str = "[3, 7, 5, 9, 4, 6]",
+    labels: str = '["A","B","C","D","E","F"]',
+    duration: float = 10.0,
+    y_range: str = "[0, 12, 2]",
+    colors: str = "[]",
+) -> str:
+    """
+    Generate an animated Manim data visualisation clip.
+
+    Args:
+        chart_type: "bar_chart" | "line_chart" | "pie_chart" | "counter" | "scatter"
+        title:      Chart heading displayed at top
+        data:       JSON array of numbers (y-values for bar/line/scatter; segment values for pie)
+                    For scatter: JSON array of [x, y] pairs e.g. "[[1,2],[3,4],[5,3]]"
+                    For counter: single-element array with the target value e.g. "[1000000]"
+        labels:     JSON array of strings (bar names / axis labels / pie segment names)
+        duration:   Clip length in seconds
+        y_range:    JSON array [min, max, step] — used by bar/line/scatter
+        colors:     JSON array of colour names e.g. '["BLUE","RED","GREEN"]'
+
+    Returns JSON: {"video_url": str, "duration": float, "chart_type": str}
+    """
+    _json = __import__("json")
+    return json.dumps(await impl_generate_chart(
+        chart_type=chart_type,
+        title=title,
+        data=_json.loads(data),
+        labels=_json.loads(labels),
+        duration=duration,
+        y_range=_json.loads(y_range),
+        colors=_json.loads(colors),
+    ))
 
 
 # ---------------------------------------------------------------------------
@@ -237,6 +325,8 @@ TOOL_HANDLERS = {
     "blender_generate_lower_third": impl_generate_lower_third,
     "blender_generate_latex":       impl_generate_latex,
     "blender_generate_ui_mockup":   impl_generate_ui_mockup,
+    "blender_generate_animation":   impl_generate_animation,
+    "blender_generate_chart":       impl_generate_chart,
 }
 
 

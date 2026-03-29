@@ -39,7 +39,12 @@ async def run_manim_scene(
     Returns:
         Absolute path to the rendered file (.mp4 or .mov).
     """
-    env = {**os.environ, "LATEX_SCENE_ARGS": json.dumps(args)}
+    # Inject args under both the legacy key (LATEX_SCENE_ARGS) and the generic key
+    # (CHART_SCENE_ARGS) so that both latex_transparent.py and data_chart_scene.py
+    # can read them.  Custom LLM-generated scenes receive args baked into the code
+    # and don't need env vars, but setting both keys is harmless.
+    args_json = json.dumps(args)
+    env = {**os.environ, "LATEX_SCENE_ARGS": args_json, "CHART_SCENE_ARGS": args_json}
 
     with tempfile.TemporaryDirectory(prefix="manim_work_") as work_dir:
         cmd = [

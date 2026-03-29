@@ -33,9 +33,10 @@ from langgraph.graph import END, StateGraph
 
 class LatexState(TypedDict):
     latex_expression: str
-    animation_type: str          # "appear" | "morph" | "step_by_step"
+    animation_type: str          # "appear" | "morph" | "step_by_step" | "custom"
     duration: float
     background_style: str        # "dark" | "light" | "transparent"
+    prompt: str                  # Optional natural-language animation description
     option: str                  # "A" | "B" | "auto"
     # filled by pipeline
     chosen_option: str           # "A" or "B"
@@ -120,32 +121,87 @@ async def _option_a_node(state: LatexState) -> LatexState:
 async def _option_b_node(state: LatexState) -> LatexState:
     """
     Option B: Manim transparent clip + Blender scene → MoviePy composite.
+
+    Strategy (in order):
+    1. If a custom `prompt` is provided, or `animation_type == "custom"`, use the
+       LLM code-generation pipeline (manim_codegen) for full creative flexibility.
+    2. Otherwise attempt LLM code generation with a description derived from the
+       latex_expression and animation_type (richer than the 3-branch static script).
+    3. If LLM generation fails after MAX_RETRIES, fall back to the hardcoded
+       latex_transparent.py template — always a working safe result.
     """
     _, run_manim_scene, run_blender_script, composite_manim_over_blender = _tools()
 
     duration = float(state.get("duration", 8.0))
     output_mp4 = state.get("output_path") or f"/tmp/latex_b_{os.getpid()}.mp4"
 
-    # Step 1 — Manim transparent equation
-    manim_scene = str(
-        Path(__file__).parent.parent / "manim_scripts" / "latex_transparent.py"
-    )
+    # ── Build animation description for LLM ──────────────────────────────────
+    custom_prompt = state.get("prompt", "").strip()
+    anim_type = state.get("animation_type", "appear")
+    expr = state["latex_expression"]
+
+    if custom_prompt:
+        description = custom_prompt
+    elif anim_type == "morph":
+        description = (
+            f"Animate the LaTeX equation: {expr}\n"
+            "Show the left-hand side first, then transform it into the full equation "
+            "using TransformMatchingTex. Use colour to distinguish different terms. "
+            f"Total duration: {duration:.1f}s."
+        )
+    elif anim_type == "step_by_step":
+        description = (
+            f"Animate the LaTeX equation: {expr}\n"
+            "Reveal each term one at a time from left to right, using FadeIn with "
+            "a slight upward shift. Colour each distinct term differently. "
+            "After all terms are visible, regroup them to the centre and hold. "
+            f"Total duration: {duration:.1f}s."
+        )
+    else:
+        description = (
+            f"Animate the LaTeX equation: {expr}\n"
+            "Write the equation onto the screen using the Write animation. "
+            "Then use Indicate to highlight the most important part. "
+            f"Total duration: {duration:.1f}s. Background: {state.get('background_style','dark')}."
+        )
+
+    # ── Step 1: LLM-generated Manim (transparent background for compositing) ─
     eq_video = f"/tmp/latex_eq_{os.getpid()}.mov"
     try:
-        eq_video = await run_manim_scene(
-            scene_file=manim_scene,
-            scene_class="LatexTransparent",
-            args={
-                "latex_expression": state["latex_expression"],
-                "animation_type": state.get("animation_type", "appear"),
-                "duration": duration,
-            },
-            quality="m",
+        from tools.manim_codegen import generate_and_run_manim
+        eq_video = await generate_and_run_manim(
+            description=description,
+            duration=duration,
+            background=state.get("background_style", "dark"),
             output_path=eq_video,
             transparent=True,
+            quality="m",
         )
-    except RuntimeError as e:
-        return {**state, "error": f"Manim transparent render failed: {e}"}
+    except RuntimeError as llm_err:
+        # ── Fallback: hardcoded latex_transparent.py ─────────────────────────
+        import logging
+        logging.getLogger(__name__).warning(
+            "LLM Manim generation failed, falling back to latex_transparent.py: %s",
+            str(llm_err)[:300],
+        )
+        manim_scene = str(
+            Path(__file__).parent.parent / "manim_scripts" / "latex_transparent.py"
+        )
+        try:
+            eq_video = await run_manim_scene(
+                scene_file=manim_scene,
+                scene_class="LatexTransparent",
+                args={
+                    "latex_expression": expr,
+                    "animation_type": anim_type if anim_type in ("appear", "morph", "step_by_step") else "appear",
+                    "duration": duration,
+                },
+                quality="m",
+                output_path=eq_video,
+                transparent=True,
+            )
+        except RuntimeError as e:
+            return {**state, "error": f"Manim transparent render failed: {e}"}
 
     # Step 2 — Blender background scene
     scene_script = str(
@@ -222,6 +278,7 @@ async def run_latex_agent(
     animation_type: str = "appear",
     duration: float = 8.0,
     background_style: str = "dark",
+    prompt: str = "",
     output_path: str | None = None,
     option: str = "auto",
 ) -> dict:
@@ -244,6 +301,7 @@ async def run_latex_agent(
         "animation_type": animation_type,
         "duration": duration,
         "background_style": background_style,
+        "prompt": prompt,
         "option": option,
         "chosen_option": "",
         "svg_path": "",

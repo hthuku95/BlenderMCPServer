@@ -47,10 +47,16 @@ class LatexTransparent(Scene):
         anim_type: str = args.get("animation_type", "appear")
         duration: float = float(args.get("duration", 8.0))
 
-        # Normalise expression
+        # Normalise expression for MathTex.
+        # MathTex wraps its argument in \begin{align*}...\end{align*} internally,
+        # so passing \[...\] or $...$ wrappers causes double-nesting and a LaTeX
+        # compile error.  Strip any display-math delimiters before handing off.
         expr = expr.strip()
-        if not expr.startswith(r"\begin") and "$" not in expr and r"\[" not in expr:
-            expr = rf"\[ {expr} \]"
+        expr = expr.replace(r"\[", "").replace(r"\]", "").strip()
+        if expr.startswith("$$") and expr.endswith("$$"):
+            expr = expr[2:-2].strip()
+        elif expr.startswith("$") and expr.endswith("$"):
+            expr = expr[1:-1].strip()
 
         # White equation on transparent background
         eq = MathTex(expr, color=WHITE)

@@ -134,8 +134,10 @@ if surface == "sphere":
         y = math.sin(theta) * r
         z = y_off * 5
         use_inst = instance_obj if i % 3 != 0 else inst2
-        bpy.ops.object.duplicate({'selected_objects': [use_inst]}, linked=True)
-        dup = bpy.context.active_object
+        dup = use_inst.copy()
+        dup.data = use_inst.data  # linked data
+        bpy.context.collection.objects.link(dup)
+        bpy.context.view_layer.objects.active = dup
         dup.location = (x, y, z)
         dup.hide_viewport = False; dup.hide_render = False
         scatter_objs.append((dup, x, y, z))
@@ -150,8 +152,10 @@ elif surface == "torus":
         y = (major_r + minor_r * math.cos(phi)) * math.sin(theta)
         z = minor_r * math.sin(phi)
         use_inst = instance_obj if i % 3 != 0 else inst2
-        bpy.ops.object.duplicate({'selected_objects': [use_inst]}, linked=True)
-        dup = bpy.context.active_object
+        dup = use_inst.copy()
+        dup.data = use_inst.data  # linked data
+        bpy.context.collection.objects.link(dup)
+        bpy.context.view_layer.objects.active = dup
         dup.location = (x, y, z)
         dup.hide_viewport = False; dup.hide_render = False
         scatter_objs.append((dup, x, y, z))
@@ -179,8 +183,10 @@ else:  # plane — random distribution
         y = random.uniform(-4, 4)
         z = 0
         use_inst = instance_obj if i % 3 != 0 else inst2
-        bpy.ops.object.duplicate({'selected_objects': [use_inst]}, linked=True)
-        dup = bpy.context.active_object
+        dup = use_inst.copy()
+        dup.data = use_inst.data  # linked data
+        bpy.context.collection.objects.link(dup)
+        bpy.context.view_layer.objects.active = dup
         dup.location = (x, y, z)
         dup.rotation_euler = (random.uniform(0, 6.28),
                                random.uniform(0, 6.28),

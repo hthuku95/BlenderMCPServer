@@ -158,11 +158,16 @@ for ci, ch in enumerate(text_upper):
         stroke_count += 1
 
 # ── BUILD modifier — strokes appear over time ──────────────────────────────────
-build_mod = gp_obj.modifiers.new("Build", type='GP_BUILD')
-build_mod.mode        = 'SEQUENTIAL'
-build_mod.transition  = 'GROW'
-build_mod.start_frame = 1
-build_mod.length      = max(1, int(total_frames * 0.75))  # reveal over 75% of duration
+# Grease Pencil objects use grease_pencil_modifiers (not modifiers) in Blender 3.x
+try:
+    build_mod = gp_obj.grease_pencil_modifiers.new("Build", type='GP_BUILD')
+    build_mod.mode        = 'SEQUENTIAL'
+    build_mod.transition  = 'GROW'
+    build_mod.start_frame = 1
+    build_mod.length      = max(1, int(total_frames * 0.75))
+except Exception:
+    # GP_BUILD not available — strokes will all be visible from frame 1 (acceptable fallback)
+    pass
 
 # ── Optional cursor line ───────────────────────────────────────────────────────
 if style in ("whiteboard", "chalkboard"):

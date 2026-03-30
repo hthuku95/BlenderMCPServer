@@ -74,7 +74,7 @@ def _gemini_vision_single(prompt: str, image_path_or_url: str) -> str:
         raise RuntimeError("GEMINI_API_KEY not set")
 
     genai.configure(api_key=api_key)
-    model = genai.GenerativeModel("gemini-2.0-flash-lite")
+    model = genai.GenerativeModel("gemini-2.5-flash")
 
     media_type, b64 = _encode_image(image_path_or_url)
     image_part = {"mime_type": media_type, "data": b64}
@@ -92,7 +92,7 @@ def _gemini_vision_two(prompt: str, image1: str, image2: str) -> str:
         raise RuntimeError("GEMINI_API_KEY not set")
 
     genai.configure(api_key=api_key)
-    model = genai.GenerativeModel("gemini-2.0-flash-lite")
+    model = genai.GenerativeModel("gemini-2.5-flash")
 
     mt1, b1 = _encode_image(image1)
     mt2, b2 = _encode_image(image2)

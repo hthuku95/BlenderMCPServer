@@ -56,7 +56,7 @@ _configure_langsmith()
 # Model name constants (overridable via env)
 # ---------------------------------------------------------------------------
 
-_GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.0-flash-lite")
+_GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 _CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-opus-4-6")
 _PROVIDER     = os.getenv("LLM_PROVIDER", "auto").lower()  # "gemini" | "claude" | "auto"
 

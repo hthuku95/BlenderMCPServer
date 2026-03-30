@@ -1066,3 +1066,235 @@ async def impl_generate_geometry_proof(
         pass
 
     return {"video_url": video_url, "duration": duration, "proof_type": proof_type}
+
+
+# ---------------------------------------------------------------------------
+# Blender: Particle Confetti / Snow / Stars
+# ---------------------------------------------------------------------------
+
+async def impl_generate_particle_confetti(
+    style: str = "confetti",
+    count: int = 400,
+    duration: float = 6.0,
+    primary_color=None,
+    secondary_color=None,
+    bg_color=None,
+) -> dict:
+    from tools.blender_runner import run_blender_script
+    from tools.storage import upload_render
+
+    output_path = f"/tmp/confetti_{uuid.uuid4().hex}.mp4"
+    args = {
+        "style": style,
+        "count": count,
+        "duration": duration,
+        "output_path": output_path,
+    }
+    if primary_color:   args["primary_color"]   = primary_color
+    if secondary_color: args["secondary_color"]  = secondary_color
+    if bg_color:        args["bg_color"]         = bg_color
+
+    script = str(_ROOT / "blender_scripts" / "particle_confetti.py")
+    await run_blender_script(script, args, timeout=600)
+    video_url = upload_render(output_path, prefix="particle_confetti")
+    try:
+        import os as _os; _os.unlink(output_path)
+    except OSError:
+        pass
+    return {"video_url": video_url, "duration": duration, "style": style}
+
+
+# ---------------------------------------------------------------------------
+# Blender: Rigid Body Drop
+# ---------------------------------------------------------------------------
+
+async def impl_generate_rigid_body_drop(
+    text: str = "DROP",
+    object_type: str = "text",
+    count: int = 12,
+    duration: float = 5.0,
+    color=None,
+    bg_color=None,
+    style: str = "dark",
+) -> dict:
+    from tools.blender_runner import run_blender_script
+    from tools.storage import upload_render
+
+    output_path = f"/tmp/rigidbody_{uuid.uuid4().hex}.mp4"
+    args = {
+        "text": text,
+        "object_type": object_type,
+        "count": count,
+        "duration": duration,
+        "style": style,
+        "output_path": output_path,
+    }
+    if color:    args["color"]    = color
+    if bg_color: args["bg_color"] = bg_color
+
+    script = str(_ROOT / "blender_scripts" / "rigid_body_drop.py")
+    await run_blender_script(script, args, timeout=600)
+    video_url = upload_render(output_path, prefix="rigid_body_drop")
+    try:
+        import os as _os; _os.unlink(output_path)
+    except OSError:
+        pass
+    return {"video_url": video_url, "duration": duration, "text": text}
+
+
+# ---------------------------------------------------------------------------
+# Blender: Camera Path / Fly-through
+# ---------------------------------------------------------------------------
+
+async def impl_generate_camera_path(
+    path_type: str = "orbit",
+    subject: str = "abstract",
+    title: str = "",
+    duration: float = 8.0,
+    color=None,
+    bg_color=None,
+    style: str = "cinematic",
+) -> dict:
+    from tools.blender_runner import run_blender_script
+    from tools.storage import upload_render
+
+    output_path = f"/tmp/campath_{uuid.uuid4().hex}.mp4"
+    args = {
+        "path_type": path_type,
+        "subject": subject,
+        "title": title,
+        "duration": duration,
+        "style": style,
+        "output_path": output_path,
+    }
+    if color:    args["color"]    = color
+    if bg_color: args["bg_color"] = bg_color
+
+    script = str(_ROOT / "blender_scripts" / "camera_path.py")
+    await run_blender_script(script, args, timeout=600)
+    video_url = upload_render(output_path, prefix="camera_path")
+    try:
+        import os as _os; _os.unlink(output_path)
+    except OSError:
+        pass
+    return {"video_url": video_url, "duration": duration, "path_type": path_type}
+
+
+# ---------------------------------------------------------------------------
+# Blender: Toon / NPR Cartoon Scene
+# ---------------------------------------------------------------------------
+
+async def impl_generate_toon_scene(
+    subject: str = "abstract",
+    title: str = "",
+    duration: float = 6.0,
+    outline_color=None,
+    primary_color=None,
+    bg_color=None,
+    outline_width: float = 1.5,
+    flat_shading: bool = True,
+    animated: bool = True,
+) -> dict:
+    from tools.blender_runner import run_blender_script
+    from tools.storage import upload_render
+
+    output_path = f"/tmp/toon_{uuid.uuid4().hex}.mp4"
+    args = {
+        "subject": subject,
+        "title": title,
+        "duration": duration,
+        "outline_width": outline_width,
+        "flat_shading": flat_shading,
+        "animated": animated,
+        "output_path": output_path,
+    }
+    if outline_color:  args["outline_color"]  = outline_color
+    if primary_color:  args["primary_color"]  = primary_color
+    if bg_color:       args["bg_color"]       = bg_color
+
+    script = str(_ROOT / "blender_scripts" / "toon_scene.py")
+    await run_blender_script(script, args, timeout=600)
+    video_url = upload_render(output_path, prefix="toon_scene")
+    try:
+        import os as _os; _os.unlink(output_path)
+    except OSError:
+        pass
+    return {"video_url": video_url, "duration": duration, "subject": subject}
+
+
+# ---------------------------------------------------------------------------
+# Blender: Grease Pencil Whiteboard Reveal
+# ---------------------------------------------------------------------------
+
+async def impl_generate_grease_pencil_reveal(
+    text: str = "HELLO",
+    style: str = "whiteboard",
+    duration: float = 6.0,
+    color=None,
+    bg_color=None,
+    stroke_width: int = 50,
+) -> dict:
+    from tools.blender_runner import run_blender_script
+    from tools.storage import upload_render
+
+    output_path = f"/tmp/gp_reveal_{uuid.uuid4().hex}.mp4"
+    args = {
+        "text": text,
+        "style": style,
+        "duration": duration,
+        "stroke_width": stroke_width,
+        "output_path": output_path,
+    }
+    if color:    args["color"]    = color
+    if bg_color: args["bg_color"] = bg_color
+
+    script = str(_ROOT / "blender_scripts" / "grease_pencil_reveal.py")
+    await run_blender_script(script, args, timeout=600)
+    video_url = upload_render(output_path, prefix="gp_reveal")
+    try:
+        import os as _os; _os.unlink(output_path)
+    except OSError:
+        pass
+    return {"video_url": video_url, "duration": duration, "text": text, "style": style}
+
+
+# ---------------------------------------------------------------------------
+# Blender: Geometry Scatter
+# ---------------------------------------------------------------------------
+
+async def impl_generate_geometry_scatter(
+    instance_type: str = "spheres",
+    surface: str = "plane",
+    count: int = 200,
+    duration: float = 8.0,
+    primary_color=None,
+    secondary_color=None,
+    bg_color=None,
+    animated: bool = True,
+    scale: float = 1.0,
+) -> dict:
+    from tools.blender_runner import run_blender_script
+    from tools.storage import upload_render
+
+    output_path = f"/tmp/scatter_{uuid.uuid4().hex}.mp4"
+    args = {
+        "instance_type": instance_type,
+        "surface": surface,
+        "count": count,
+        "duration": duration,
+        "animated": animated,
+        "scale": scale,
+        "output_path": output_path,
+    }
+    if primary_color:   args["primary_color"]   = primary_color
+    if secondary_color: args["secondary_color"]  = secondary_color
+    if bg_color:        args["bg_color"]         = bg_color
+
+    script = str(_ROOT / "blender_scripts" / "geometry_scatter.py")
+    await run_blender_script(script, args, timeout=600)
+    video_url = upload_render(output_path, prefix="geometry_scatter")
+    try:
+        import os as _os; _os.unlink(output_path)
+    except OSError:
+        pass
+    return {"video_url": video_url, "duration": duration, "instance_type": instance_type, "surface": surface}

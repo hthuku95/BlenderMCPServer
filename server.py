@@ -51,6 +51,12 @@ from tools.render_tools import (
     impl_generate_3d_math,
     impl_generate_ui_mockup,
     impl_generate_vector_field,
+    impl_generate_particle_confetti,
+    impl_generate_rigid_body_drop,
+    impl_generate_camera_path,
+    impl_generate_toon_scene,
+    impl_generate_grease_pencil_reveal,
+    impl_generate_geometry_scatter,
 )
 from tools.job_queue import queue as _job_queue
 from tools.rate_limiter import limiter as _limiter
@@ -726,6 +732,204 @@ async def blender_generate_geometry_proof(
     ))
 
 
+@mcp.tool()
+async def blender_generate_particle_confetti(
+    style: str = "confetti",
+    count: int = 400,
+    duration: float = 6.0,
+    primary_color: str = "",
+    secondary_color: str = "",
+    bg_color: str = "",
+) -> str:
+    """Generate an animated particle burst — confetti, snow, stars, rain, or bubbles.
+
+    Args:
+        style: "confetti" | "snow" | "stars" | "rain" | "bubbles"
+        count: number of particles (default: 400)
+        duration: clip length in seconds
+        primary_color: JSON RGBA float array e.g. "[1,0.3,0.1,1]"
+        secondary_color: JSON RGBA float array for second color variant
+        bg_color: JSON RGBA float array for background
+
+    Returns JSON: {"video_url": str, "duration": float, "style": str}
+    """
+    import json as _j
+    kwargs = {"style": style, "count": count, "duration": duration}
+    for k, v in [("primary_color", primary_color), ("secondary_color", secondary_color), ("bg_color", bg_color)]:
+        if v:
+            try: kwargs[k] = _j.loads(v)
+            except Exception: pass
+    return _j.dumps(await impl_generate_particle_confetti(**kwargs))
+
+
+@mcp.tool()
+async def blender_generate_rigid_body_drop(
+    text: str = "DROP",
+    object_type: str = "text",
+    count: int = 12,
+    duration: float = 5.0,
+    color: str = "",
+    bg_color: str = "",
+    style: str = "dark",
+) -> str:
+    """Generate a physics rigid-body drop animation — 3D letters or objects fall and collide.
+
+    Args:
+        text: text to extrude as falling 3D letters (used when object_type="text")
+        object_type: "text" | "spheres" | "cubes" | "mixed"
+        count: number of objects if not text
+        duration: clip length in seconds
+        color: JSON RGBA float array
+        bg_color: JSON RGBA float array
+        style: "dark" | "bright" | "neon"
+
+    Returns JSON: {"video_url": str, "duration": float, "text": str}
+    """
+    import json as _j
+    kwargs = {"text": text, "object_type": object_type, "count": count, "duration": duration, "style": style}
+    for k, v in [("color", color), ("bg_color", bg_color)]:
+        if v:
+            try: kwargs[k] = _j.loads(v)
+            except Exception: pass
+    return _j.dumps(await impl_generate_rigid_body_drop(**kwargs))
+
+
+@mcp.tool()
+async def blender_generate_camera_path(
+    path_type: str = "orbit",
+    subject: str = "abstract",
+    title: str = "",
+    duration: float = 8.0,
+    color: str = "",
+    bg_color: str = "",
+    style: str = "cinematic",
+) -> str:
+    """Generate a smooth camera fly-through / orbit animation — orbit, helix, arc, dolly zoom, or flythrough.
+
+    Args:
+        path_type: "orbit" | "helix" | "arc" | "dolly_zoom" | "flythrough"
+        subject: "spheres" | "cubes" | "text" | "abstract" | "landscape"
+        title: optional 3D text placed in scene
+        duration: clip length in seconds
+        color: JSON RGBA float array for objects
+        bg_color: JSON RGBA float array for background
+        style: "cinematic" | "minimal" | "neon"
+
+    Returns JSON: {"video_url": str, "duration": float, "path_type": str}
+    """
+    import json as _j
+    kwargs = {"path_type": path_type, "subject": subject, "title": title, "duration": duration, "style": style}
+    for k, v in [("color", color), ("bg_color", bg_color)]:
+        if v:
+            try: kwargs[k] = _j.loads(v)
+            except Exception: pass
+    return _j.dumps(await impl_generate_camera_path(**kwargs))
+
+
+@mcp.tool()
+async def blender_generate_toon_scene(
+    subject: str = "abstract",
+    title: str = "",
+    duration: float = 6.0,
+    outline_color: str = "",
+    primary_color: str = "",
+    bg_color: str = "",
+    outline_width: float = 1.5,
+    flat_shading: bool = True,
+    animated: bool = True,
+) -> str:
+    """Generate an NPR cartoon / toon-shaded Blender scene with bold outlines and flat colours.
+
+    Args:
+        subject: "characters" | "robots" | "landscape" | "abstract" | "logo"
+        title: optional text label
+        duration: clip length in seconds
+        outline_color: JSON RGBA float array for outlines
+        primary_color: JSON RGBA float array for main objects
+        bg_color: JSON RGBA float array
+        outline_width: thickness of outlines (0.5–5.0, default 1.5)
+        flat_shading: true for pure cartoon flat look
+        animated: true for gentle floating animation
+
+    Returns JSON: {"video_url": str, "duration": float, "subject": str}
+    """
+    import json as _j
+    kwargs = {"subject": subject, "title": title, "duration": duration,
+              "outline_width": outline_width, "flat_shading": flat_shading, "animated": animated}
+    for k, v in [("outline_color", outline_color), ("primary_color", primary_color), ("bg_color", bg_color)]:
+        if v:
+            try: kwargs[k] = _j.loads(v)
+            except Exception: pass
+    return _j.dumps(await impl_generate_toon_scene(**kwargs))
+
+
+@mcp.tool()
+async def blender_generate_grease_pencil_reveal(
+    text: str = "HELLO",
+    style: str = "whiteboard",
+    duration: float = 6.0,
+    color: str = "",
+    bg_color: str = "",
+    stroke_width: int = 50,
+) -> str:
+    """Generate a whiteboard / sketch draw-on text reveal using Grease Pencil BUILD modifier.
+
+    Args:
+        text: text to draw (max 12 characters)
+        style: "whiteboard" | "neon" | "sketch" | "chalkboard"
+        duration: clip length in seconds
+        color: JSON RGBA float array for strokes
+        bg_color: JSON RGBA float array
+        stroke_width: line thickness (10–200, default 50)
+
+    Returns JSON: {"video_url": str, "duration": float, "text": str, "style": str}
+    """
+    import json as _j
+    kwargs = {"text": text, "style": style, "duration": duration, "stroke_width": stroke_width}
+    for k, v in [("color", color), ("bg_color", bg_color)]:
+        if v:
+            try: kwargs[k] = _j.loads(v)
+            except Exception: pass
+    return _j.dumps(await impl_generate_grease_pencil_reveal(**kwargs))
+
+
+@mcp.tool()
+async def blender_generate_geometry_scatter(
+    instance_type: str = "spheres",
+    surface: str = "plane",
+    count: int = 200,
+    duration: float = 8.0,
+    primary_color: str = "",
+    secondary_color: str = "",
+    bg_color: str = "",
+    animated: bool = True,
+    scale: float = 1.0,
+) -> str:
+    """Generate a procedural instance-scatter animation — objects distributed across a surface with animated wave motion.
+
+    Args:
+        instance_type: "cubes" | "spheres" | "stars" | "arrows" | "crystals"
+        surface: "plane" | "sphere" | "torus" | "grid"
+        count: number of instances (default: 200)
+        duration: clip length in seconds
+        primary_color: JSON RGBA float array
+        secondary_color: JSON RGBA float array for second color
+        bg_color: JSON RGBA float array
+        animated: true for wave displacement animation
+        scale: instance object scale (default: 1.0)
+
+    Returns JSON: {"video_url": str, "duration": float, "instance_type": str, "surface": str}
+    """
+    import json as _j
+    kwargs = {"instance_type": instance_type, "surface": surface, "count": count,
+              "duration": duration, "animated": animated, "scale": scale}
+    for k, v in [("primary_color", primary_color), ("secondary_color", secondary_color), ("bg_color", bg_color)]:
+        if v:
+            try: kwargs[k] = _j.loads(v)
+            except Exception: pass
+    return _j.dumps(await impl_generate_geometry_scatter(**kwargs))
+
+
 # ---------------------------------------------------------------------------
 # REST API (for Rust BlenderMCPClient)
 # ---------------------------------------------------------------------------
@@ -753,6 +957,12 @@ TOOL_HANDLERS = {
     "blender_generate_matrix_transform": impl_generate_matrix_transform,
     "blender_generate_polar_graph":   impl_generate_polar_graph,
     "blender_generate_geometry_proof": impl_generate_geometry_proof,
+    "blender_generate_particle_confetti": impl_generate_particle_confetti,
+    "blender_generate_rigid_body_drop": impl_generate_rigid_body_drop,
+    "blender_generate_camera_path":    impl_generate_camera_path,
+    "blender_generate_toon_scene":     impl_generate_toon_scene,
+    "blender_generate_grease_pencil_reveal": impl_generate_grease_pencil_reveal,
+    "blender_generate_geometry_scatter": impl_generate_geometry_scatter,
 }
 
 

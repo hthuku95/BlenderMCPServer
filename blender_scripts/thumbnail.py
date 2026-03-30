@@ -31,28 +31,12 @@ scene = bpy.context.scene
 scene.render.resolution_x = 1280
 scene.render.resolution_y = 720
 scene.render.resolution_percentage = 100
-# Thumbnail is a single still frame — use Cycles CPU for photorealistic quality.
-# 128 samples + OIDN denoising ≈ 45s on 1 vCPU, which is acceptable.
-scene.render.engine = "CYCLES"
-scene.cycles.device = "CPU"
-scene.cycles.samples = 32
-scene.cycles.use_denoising = True
-try:
-    # OPENIMAGEDENOISE requires SSE4.1 and must be compiled into the Blender build.
-    # On some headless servers (Blender 3.4 apt package) the enum may be empty —
-    # wrap in try/except so we get denoising when available, skip it when not.
-    scene.cycles.denoiser = "OPENIMAGEDENOISE"
-except TypeError:
-    try:
-        scene.cycles.denoiser = "NLM"
-    except TypeError:
-        scene.cycles.use_denoising = False
-try:
-    _cprefs = bpy.context.preferences.addons["cycles"].preferences
-    _cprefs.get_devices()
-    _cprefs.compute_device_type = "NONE"
-except Exception:
-    pass
+# WORKBENCH renders a single frame in ~2-5s (vs CYCLES which takes 5+ min on 1 vCPU).
+# Materials use diffuse_color so colours are preserved; STUDIO lighting adds depth.
+scene.render.engine = "BLENDER_WORKBENCH"
+scene.display.shading.light      = "STUDIO"
+scene.display.shading.color_type = "MATERIAL"
+scene.display.shading.show_shadows = True
 scene.render.image_settings.file_format = "PNG"
 scene.render.filepath = output_path
 scene.frame_set(1)
@@ -113,9 +97,7 @@ sphere.data.materials.append(sph_mat)
 bpy.ops.mesh.primitive_plane_add(size=20, location=(0, 0, -1.5))
 floor = bpy.context.active_object
 fl_mat = bpy.data.materials.new("Floor")
-fl_mat.use_nodes = True
-fl_mat.node_tree.nodes["Principled BSDF"].inputs["Base Color"].default_value = (0.03, 0.03, 0.06, 1.0)
-fl_mat.node_tree.nodes["Principled BSDF"].inputs["Roughness"].default_value = 0.95
+fl_mat.diffuse_color = (0.03, 0.03, 0.06, 1.0)
 floor.data.materials.append(fl_mat)
 
 # Title text overlay
@@ -127,11 +109,7 @@ if title_text:
     txt.data.extrude = 0.06
     txt.data.align_x = "LEFT"
     txt_mat = bpy.data.materials.new("TitleText")
-    txt_mat.use_nodes = True
-    t_bsdf = txt_mat.node_tree.nodes["Principled BSDF"]
-    t_bsdf.inputs["Base Color"].default_value = (1.0, 1.0, 1.0, 1.0)
-    t_bsdf.inputs["Emission"].default_value = (1.0, 1.0, 1.0, 1.0)
-    t_bsdf.inputs["Emission Strength"].default_value = 1.5
+    txt_mat.diffuse_color = (1.0, 1.0, 1.0, 1.0)
     txt.data.materials.append(txt_mat)
 
 # Key light

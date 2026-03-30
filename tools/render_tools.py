@@ -878,3 +878,191 @@ async def impl_generate_countdown(
 
     return {"video_url": video_url, "duration": duration,
             "start_number": start_number, "end_number": end_number}
+
+
+# ---------------------------------------------------------------------------
+# Manim: Text Animation / Kinetic Typography
+# ---------------------------------------------------------------------------
+
+async def impl_generate_text_animation(
+    text: str = "Make it Count",
+    subtitle: str = "",
+    mode: str = "letter_by_letter",
+    color: str = "WHITE",
+    bg_color: str = "dark",
+    duration: float = 8.0,
+    font_size: int = 72,
+    words_to_highlight: list | None = None,
+) -> dict:
+    from tools.manim_runner import run_manim_scene
+    from tools.storage import upload_render
+
+    scene_file  = str(_ROOT / "manim_scripts" / "text_animation_scene.py")
+    output_path = f"/tmp/textanim_{uuid.uuid4().hex}.mp4"
+
+    await run_manim_scene(
+        scene_file=scene_file,
+        scene_class="TextAnimationScene",
+        args={"text": text, "subtitle": subtitle, "mode": mode, "color": color,
+              "bg_color": bg_color, "duration": duration, "font_size": font_size,
+              "words_to_highlight": words_to_highlight or []},
+        quality="m",
+        output_path=output_path,
+        timeout=300,
+    )
+
+    video_url = upload_render(output_path, prefix="text_animations")
+    try:
+        import os as _os; _os.unlink(output_path)
+    except OSError:
+        pass
+
+    return {"video_url": video_url, "duration": duration, "mode": mode}
+
+
+# ---------------------------------------------------------------------------
+# Manim: Vector Field
+# ---------------------------------------------------------------------------
+
+async def impl_generate_vector_field(
+    field_type: str = "rotation",
+    title: str = "Vector Field",
+    duration: float = 12.0,
+    show_streams: bool = True,
+    color: str = "BLUE",
+    style: str = "dark",
+) -> dict:
+    from tools.manim_runner import run_manim_scene
+    from tools.storage import upload_render
+
+    scene_file  = str(_ROOT / "manim_scripts" / "vector_field_scene.py")
+    output_path = f"/tmp/vecfield_{uuid.uuid4().hex}.mp4"
+
+    await run_manim_scene(
+        scene_file=scene_file,
+        scene_class="VectorFieldScene",
+        args={"field_type": field_type, "title": title, "duration": duration,
+              "show_streams": show_streams, "color": color, "style": style},
+        quality="m",
+        output_path=output_path,
+        timeout=300,
+    )
+
+    video_url = upload_render(output_path, prefix="vector_fields")
+    try:
+        import os as _os; _os.unlink(output_path)
+    except OSError:
+        pass
+
+    return {"video_url": video_url, "duration": duration, "field_type": field_type}
+
+
+# ---------------------------------------------------------------------------
+# Manim: Matrix Transformation
+# ---------------------------------------------------------------------------
+
+async def impl_generate_matrix_transform(
+    matrix: list | None = None,
+    title: str = "Linear Transformation",
+    duration: float = 12.0,
+    show_vectors: bool = True,
+    show_det: bool = True,
+) -> dict:
+    from tools.manim_runner import run_manim_scene
+    from tools.storage import upload_render
+
+    scene_file  = str(_ROOT / "manim_scripts" / "matrix_transform_scene.py")
+    output_path = f"/tmp/matrix_{uuid.uuid4().hex}.mp4"
+
+    await run_manim_scene(
+        scene_file=scene_file,
+        scene_class="MatrixTransformScene",
+        args={"matrix": matrix or [[0, -1], [1, 0]], "title": title,
+              "duration": duration, "show_vectors": show_vectors, "show_det": show_det},
+        quality="m",
+        output_path=output_path,
+        timeout=300,
+    )
+
+    video_url = upload_render(output_path, prefix="matrix_transforms")
+    try:
+        import os as _os; _os.unlink(output_path)
+    except OSError:
+        pass
+
+    return {"video_url": video_url, "duration": duration}
+
+
+# ---------------------------------------------------------------------------
+# Manim: Polar Graph / Complex Plane
+# ---------------------------------------------------------------------------
+
+async def impl_generate_polar_graph(
+    plane_type: str = "polar",
+    title: str = "Polar Graph",
+    function: str = "rose",
+    k_value: int = 4,
+    duration: float = 12.0,
+    color: str = "BLUE",
+    show_label: bool = True,
+) -> dict:
+    from tools.manim_runner import run_manim_scene
+    from tools.storage import upload_render
+
+    scene_file  = str(_ROOT / "manim_scripts" / "polar_graph_scene.py")
+    output_path = f"/tmp/polar_{uuid.uuid4().hex}.mp4"
+
+    await run_manim_scene(
+        scene_file=scene_file,
+        scene_class="PolarGraphScene",
+        args={"plane_type": plane_type, "title": title, "function": function,
+              "k_value": k_value, "duration": duration, "color": color, "show_label": show_label},
+        quality="m",
+        output_path=output_path,
+        timeout=300,
+    )
+
+    video_url = upload_render(output_path, prefix="polar_graphs")
+    try:
+        import os as _os; _os.unlink(output_path)
+    except OSError:
+        pass
+
+    return {"video_url": video_url, "duration": duration, "plane_type": plane_type}
+
+
+# ---------------------------------------------------------------------------
+# Manim: Geometry Proof
+# ---------------------------------------------------------------------------
+
+async def impl_generate_geometry_proof(
+    proof_type: str = "pythagorean",
+    title: str = "Geometry Proof",
+    duration: float = 14.0,
+    color_a: str = "BLUE",
+    color_b: str = "RED",
+    show_labels: bool = True,
+) -> dict:
+    from tools.manim_runner import run_manim_scene
+    from tools.storage import upload_render
+
+    scene_file  = str(_ROOT / "manim_scripts" / "geometry_proof_scene.py")
+    output_path = f"/tmp/geoproof_{uuid.uuid4().hex}.mp4"
+
+    await run_manim_scene(
+        scene_file=scene_file,
+        scene_class="GeometryProofScene",
+        args={"proof_type": proof_type, "title": title, "duration": duration,
+              "color_a": color_a, "color_b": color_b, "show_labels": show_labels},
+        quality="m",
+        output_path=output_path,
+        timeout=400,
+    )
+
+    video_url = upload_render(output_path, prefix="geometry_proofs")
+    try:
+        import os as _os; _os.unlink(output_path)
+    except OSError:
+        pass
+
+    return {"video_url": video_url, "duration": duration, "proof_type": proof_type}

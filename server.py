@@ -36,16 +36,21 @@ from tools.render_tools import (
     impl_generate_countdown,
     impl_generate_data_viz,
     impl_generate_flowchart,
+    impl_generate_geometry_proof,
     impl_generate_latex,
     impl_generate_logo_reveal,
     impl_generate_lower_third,
+    impl_generate_matrix_transform,
     impl_generate_network_graph,
+    impl_generate_polar_graph,
     impl_generate_scene,
+    impl_generate_text_animation,
     impl_generate_thumbnail,
     impl_generate_timeline,
     impl_generate_title_card,
     impl_generate_3d_math,
     impl_generate_ui_mockup,
+    impl_generate_vector_field,
 )
 from tools.job_queue import queue as _job_queue
 from tools.rate_limiter import limiter as _limiter
@@ -565,6 +570,162 @@ async def blender_generate_countdown(
     ))
 
 
+@mcp.tool()
+async def blender_generate_text_animation(
+    text: str = "Make it Count",
+    subtitle: str = "",
+    mode: str = "letter_by_letter",
+    color: str = "WHITE",
+    bg_color: str = "dark",
+    duration: float = 8.0,
+    font_size: int = 72,
+    words_to_highlight: str = "[]",
+) -> str:
+    """
+    Generate kinetic typography / text animation using Manim.
+
+    Args:
+        text:               Main text to animate
+        subtitle:           Optional smaller second line
+        mode:               "letter_by_letter" | "word_by_word" | "typewriter" | "wave" |
+                            "zoom_burst" | "spin_in" | "color_cycle" | "highlight_words"
+        color:              Text colour: "WHITE" | "BLUE" | "RED" | "GREEN" | "GOLD" | "YELLOW"
+        bg_color:           "dark" | "light"
+        duration:           Clip length in seconds
+        font_size:          Font size in points (default 72)
+        words_to_highlight: JSON array of words to highlight (for highlight_words mode)
+
+    Returns JSON: {"video_url": str, "duration": float, "mode": str}
+    """
+    _j = __import__("json")
+    return json.dumps(await impl_generate_text_animation(
+        text=text, subtitle=subtitle, mode=mode, color=color,
+        bg_color=bg_color, duration=duration, font_size=font_size,
+        words_to_highlight=_j.loads(words_to_highlight),
+    ))
+
+
+@mcp.tool()
+async def blender_generate_vector_field(
+    field_type: str = "rotation",
+    title: str = "Vector Field",
+    duration: float = 12.0,
+    show_streams: bool = True,
+    color: str = "BLUE",
+    style: str = "dark",
+) -> str:
+    """
+    Generate an animated vector field / flow visualization using Manim.
+
+    Args:
+        field_type:   "rotation" (curl around origin) | "radial" (outward) | "sink" (inward) |
+                      "saddle" | "curl" | "gravity"
+        title:        Heading text
+        duration:     Clip length in seconds
+        show_streams: If true, renders StreamLines on top of arrow field
+        color:        Arrow/stream colour: "BLUE" | "RED" | "GREEN" | "TEAL" | "ORANGE"
+        style:        "dark" | "grid" (with NumberPlane background)
+
+    Returns JSON: {"video_url": str, "duration": float, "field_type": str}
+    """
+    return json.dumps(await impl_generate_vector_field(
+        field_type=field_type, title=title, duration=duration,
+        show_streams=show_streams, color=color, style=style,
+    ))
+
+
+@mcp.tool()
+async def blender_generate_matrix_transform(
+    matrix: str = "[[0,-1],[1,0]]",
+    title: str = "Linear Transformation",
+    duration: float = 12.0,
+    show_vectors: bool = True,
+    show_det: bool = True,
+) -> str:
+    """
+    Generate a linear algebra matrix transformation animation using Manim's LinearTransformationScene.
+
+    Args:
+        matrix:       JSON 2×2 matrix e.g. "[[0,-1],[1,0]]" (90° rotation),
+                      "[[2,0],[0,2]]" (scaling), "[[1,1],[0,1]]" (shear)
+        title:        Heading text
+        duration:     Clip length in seconds
+        show_vectors: If true, shows sample vectors being transformed
+        show_det:     If true, shows determinant annotation
+
+    Returns JSON: {"video_url": str, "duration": float}
+    """
+    _j = __import__("json")
+    return json.dumps(await impl_generate_matrix_transform(
+        matrix=_j.loads(matrix), title=title, duration=duration,
+        show_vectors=show_vectors, show_det=show_det,
+    ))
+
+
+@mcp.tool()
+async def blender_generate_polar_graph(
+    plane_type: str = "polar",
+    title: str = "Polar Graph",
+    function: str = "rose",
+    k_value: int = 4,
+    duration: float = 12.0,
+    color: str = "BLUE",
+    show_label: bool = True,
+) -> str:
+    """
+    Generate a polar coordinate / complex plane / function graph animation using Manim.
+
+    Args:
+        plane_type: "polar" (polar coordinate system with r=f(θ)) |
+                    "complex" (complex plane with multiplication) |
+                    "number_plane" (standard 2D axes with function)
+        title:      Heading text
+        function:   For polar: "rose" | "lemniscate" | "spiral" | "cardioid" | "circle"
+                    For number_plane: "sin" | "parabola"
+        k_value:    Number of petals for rose function (default 4)
+        duration:   Clip length in seconds
+        color:      Curve colour: "BLUE" | "RED" | "GREEN" | "PURPLE" | "GOLD"
+        show_label: Show formula label
+
+    Returns JSON: {"video_url": str, "duration": float, "plane_type": str}
+    """
+    return json.dumps(await impl_generate_polar_graph(
+        plane_type=plane_type, title=title, function=function,
+        k_value=k_value, duration=duration, color=color, show_label=show_label,
+    ))
+
+
+@mcp.tool()
+async def blender_generate_geometry_proof(
+    proof_type: str = "pythagorean",
+    title: str = "Geometry Proof",
+    duration: float = 14.0,
+    color_a: str = "BLUE",
+    color_b: str = "RED",
+    show_labels: bool = True,
+) -> str:
+    """
+    Generate an animated geometry proof using Manim.
+
+    Args:
+        proof_type:  "pythagorean"    — visual proof of a²+b²=c²
+                     "circle_area"   — π r² via inscribed polygon limit
+                     "triangle_sum"  — angles of triangle sum to 180°
+                     "boolean_ops"   — Union / Difference / Intersection of shapes
+        title:       Heading text
+        duration:    Clip length in seconds
+        color_a:     Primary shape colour: "BLUE" | "RED" | "GREEN" | "GOLD"
+        color_b:     Secondary shape colour
+        show_labels: Show formula / angle labels
+
+    Returns JSON: {"video_url": str, "duration": float, "proof_type": str}
+    """
+    return json.dumps(await impl_generate_geometry_proof(
+        proof_type=proof_type, title=title, duration=duration,
+        color_a=color_a, color_b=color_b, show_labels=show_labels,
+    ))
+
+
 # ---------------------------------------------------------------------------
 # REST API (for Rust BlenderMCPClient)
 # ---------------------------------------------------------------------------
@@ -587,6 +748,11 @@ TOOL_HANDLERS = {
     "blender_generate_logo_reveal":   impl_generate_logo_reveal,
     "blender_generate_abstract_bg":   impl_generate_abstract_bg,
     "blender_generate_countdown":     impl_generate_countdown,
+    "blender_generate_text_animation": impl_generate_text_animation,
+    "blender_generate_vector_field":  impl_generate_vector_field,
+    "blender_generate_matrix_transform": impl_generate_matrix_transform,
+    "blender_generate_polar_graph":   impl_generate_polar_graph,
+    "blender_generate_geometry_proof": impl_generate_geometry_proof,
 }
 
 

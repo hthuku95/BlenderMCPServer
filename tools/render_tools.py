@@ -567,3 +567,314 @@ async def impl_generate_latex(
         "animation_type": animation_type,
         "pipeline": result.get("chosen_option", "A"),  # "A" or "B"
     }
+
+
+# ---------------------------------------------------------------------------
+# Manim: Flowchart
+# ---------------------------------------------------------------------------
+
+async def impl_generate_flowchart(
+    nodes: list | None = None,
+    edges: list | None = None,
+    title: str = "Process Flowchart",
+    duration: float = 12.0,
+    style: str = "dark",
+) -> dict:
+    from tools.manim_runner import run_manim_scene
+    from tools.storage import upload_render
+
+    scene_file  = str(_ROOT / "manim_scripts" / "flowchart_scene.py")
+    output_path = f"/tmp/flowchart_{uuid.uuid4().hex}.mp4"
+
+    await run_manim_scene(
+        scene_file=scene_file,
+        scene_class="FlowchartScene",
+        args={"nodes": nodes or [], "edges": edges or [], "title": title, "duration": duration, "style": style},
+        quality="m",
+        output_path=output_path,
+        timeout=300,
+    )
+
+    video_url = upload_render(output_path, prefix="flowcharts")
+    try:
+        import os as _os; _os.unlink(output_path)
+    except OSError:
+        pass
+
+    return {"video_url": video_url, "duration": duration, "title": title}
+
+
+# ---------------------------------------------------------------------------
+# Manim: 3D Math
+# ---------------------------------------------------------------------------
+
+async def impl_generate_3d_math(
+    scene_type: str = "surface",
+    title: str = "3D Mathematics",
+    function: str = "wave",
+    duration: float = 12.0,
+    color: str = "BLUE",
+) -> dict:
+    from tools.manim_runner import run_manim_scene
+    from tools.storage import upload_render
+
+    scene_file  = str(_ROOT / "manim_scripts" / "threed_math_scene.py")
+    output_path = f"/tmp/3dmath_{uuid.uuid4().hex}.mp4"
+
+    await run_manim_scene(
+        scene_file=scene_file,
+        scene_class="ThreeDMathScene",
+        args={"scene_type": scene_type, "title": title, "function": function,
+              "duration": duration, "color": color},
+        quality="m",
+        output_path=output_path,
+        timeout=400,
+    )
+
+    video_url = upload_render(output_path, prefix="3d_math")
+    try:
+        import os as _os; _os.unlink(output_path)
+    except OSError:
+        pass
+
+    return {"video_url": video_url, "duration": duration, "scene_type": scene_type}
+
+
+# ---------------------------------------------------------------------------
+# Manim: Code Animation
+# ---------------------------------------------------------------------------
+
+async def impl_generate_code_animation(
+    code: str = "",
+    language: str = "python",
+    title: str = "Code Walkthrough",
+    highlight_lines: list | None = None,
+    reveal_mode: str = "line_by_line",
+    duration: float = 12.0,
+    style: str = "monokai",
+) -> dict:
+    from tools.manim_runner import run_manim_scene
+    from tools.storage import upload_render
+
+    scene_file  = str(_ROOT / "manim_scripts" / "code_animation_scene.py")
+    output_path = f"/tmp/code_anim_{uuid.uuid4().hex}.mp4"
+
+    await run_manim_scene(
+        scene_file=scene_file,
+        scene_class="CodeAnimationScene",
+        args={"code": code, "language": language, "title": title,
+              "highlight_lines": highlight_lines or [], "reveal_mode": reveal_mode,
+              "duration": duration, "style": style},
+        quality="m",
+        output_path=output_path,
+        timeout=300,
+    )
+
+    video_url = upload_render(output_path, prefix="code_animations")
+    try:
+        import os as _os; _os.unlink(output_path)
+    except OSError:
+        pass
+
+    return {"video_url": video_url, "duration": duration, "language": language}
+
+
+# ---------------------------------------------------------------------------
+# Manim: Timeline
+# ---------------------------------------------------------------------------
+
+async def impl_generate_timeline(
+    events: list | None = None,
+    title: str = "Project Timeline",
+    duration: float = 12.0,
+    style: str = "dark",
+    orientation: str = "horizontal",
+) -> dict:
+    from tools.manim_runner import run_manim_scene
+    from tools.storage import upload_render
+
+    scene_file  = str(_ROOT / "manim_scripts" / "timeline_scene.py")
+    output_path = f"/tmp/timeline_{uuid.uuid4().hex}.mp4"
+
+    await run_manim_scene(
+        scene_file=scene_file,
+        scene_class="TimelineScene",
+        args={"events": events or [], "title": title, "duration": duration,
+              "style": style, "orientation": orientation},
+        quality="m",
+        output_path=output_path,
+        timeout=300,
+    )
+
+    video_url = upload_render(output_path, prefix="timelines")
+    try:
+        import os as _os; _os.unlink(output_path)
+    except OSError:
+        pass
+
+    return {"video_url": video_url, "duration": duration, "title": title}
+
+
+# ---------------------------------------------------------------------------
+# Manim: Network Graph
+# ---------------------------------------------------------------------------
+
+async def impl_generate_network_graph(
+    nodes: list | None = None,
+    edges: list | None = None,
+    title: str = "Network Graph",
+    layout: str = "radial",
+    duration: float = 12.0,
+    style: str = "dark",
+) -> dict:
+    from tools.manim_runner import run_manim_scene
+    from tools.storage import upload_render
+
+    scene_file  = str(_ROOT / "manim_scripts" / "network_graph_scene.py")
+    output_path = f"/tmp/netgraph_{uuid.uuid4().hex}.mp4"
+
+    await run_manim_scene(
+        scene_file=scene_file,
+        scene_class="NetworkGraphScene",
+        args={"nodes": nodes or [], "edges": edges or [], "title": title,
+              "layout": layout, "duration": duration, "style": style},
+        quality="m",
+        output_path=output_path,
+        timeout=300,
+    )
+
+    video_url = upload_render(output_path, prefix="network_graphs")
+    try:
+        import os as _os; _os.unlink(output_path)
+    except OSError:
+        pass
+
+    return {"video_url": video_url, "duration": duration, "title": title}
+
+
+# ---------------------------------------------------------------------------
+# Blender: Logo / Text Reveal
+# ---------------------------------------------------------------------------
+
+async def impl_generate_logo_reveal(
+    text: str = "BRAND",
+    tagline: str = "",
+    style: str = "extrude_reveal",
+    color: list | None = None,
+    bg_color: list | None = None,
+    duration: float = 6.0,
+) -> dict:
+    from tools.blender_runner import run_blender_script_with_retry
+    from tools.storage import upload_render
+
+    script_path = _ROOT / "blender_scripts" / "logo_reveal.py"
+    output_path = f"/tmp/logo_{uuid.uuid4().hex}.mp4"
+
+    result = await run_blender_script_with_retry(
+        script_content=script_path.read_text(),
+        args={
+            "text": text,
+            "tagline": tagline,
+            "style": style,
+            "color": color or [0.1, 0.5, 1.0, 1.0],
+            "bg_color": bg_color or [0.02, 0.02, 0.05, 1.0],
+            "duration": duration,
+            "output_path": output_path,
+        },
+        max_attempts=2,
+        timeout=400,
+    )
+
+    video_url = upload_render(output_path, prefix="logo_reveals")
+    try:
+        import os as _os; _os.unlink(output_path)
+    except OSError:
+        pass
+
+    return {"video_url": video_url, "duration": duration, "text": text, "style": style}
+
+
+# ---------------------------------------------------------------------------
+# Blender: Abstract Background
+# ---------------------------------------------------------------------------
+
+async def impl_generate_abstract_bg(
+    style: str = "geometric",
+    primary_color: list | None = None,
+    secondary_color: list | None = None,
+    duration: float = 8.0,
+) -> dict:
+    from tools.blender_runner import run_blender_script_with_retry
+    from tools.storage import upload_render
+
+    script_path = _ROOT / "blender_scripts" / "abstract_bg.py"
+    output_path = f"/tmp/abstractbg_{uuid.uuid4().hex}.mp4"
+
+    result = await run_blender_script_with_retry(
+        script_content=script_path.read_text(),
+        args={
+            "style": style,
+            "primary_color": primary_color or [0.05, 0.2, 0.8, 1.0],
+            "secondary_color": secondary_color or [0.8, 0.1, 0.5, 1.0],
+            "duration": duration,
+            "output_path": output_path,
+        },
+        max_attempts=2,
+        timeout=500,
+    )
+
+    video_url = upload_render(output_path, prefix="abstract_bgs")
+    try:
+        import os as _os; _os.unlink(output_path)
+    except OSError:
+        pass
+
+    return {"video_url": video_url, "duration": duration, "style": style}
+
+
+# ---------------------------------------------------------------------------
+# Blender: Countdown Timer
+# ---------------------------------------------------------------------------
+
+async def impl_generate_countdown(
+    start_number: int = 5,
+    end_number: int = 1,
+    style: str = "bold",
+    color: list | None = None,
+    bg_color: list | None = None,
+    show_ring: bool = True,
+    duration: float | None = None,
+) -> dict:
+    from tools.blender_runner import run_blender_script_with_retry
+    from tools.storage import upload_render
+
+    if duration is None:
+        duration = float(abs(start_number - end_number) + 1)
+
+    script_path = _ROOT / "blender_scripts" / "countdown.py"
+    output_path = f"/tmp/countdown_{uuid.uuid4().hex}.mp4"
+
+    result = await run_blender_script_with_retry(
+        script_content=script_path.read_text(),
+        args={
+            "start_number": start_number,
+            "end_number": end_number,
+            "style": style,
+            "color": color or [0.1, 0.6, 1.0, 1.0],
+            "bg_color": bg_color or [0.02, 0.02, 0.05, 1.0],
+            "show_ring": show_ring,
+            "duration": duration,
+            "output_path": output_path,
+        },
+        max_attempts=2,
+        timeout=400,
+    )
+
+    video_url = upload_render(output_path, prefix="countdowns")
+    try:
+        import os as _os; _os.unlink(output_path)
+    except OSError:
+        pass
+
+    return {"video_url": video_url, "duration": duration,
+            "start_number": start_number, "end_number": end_number}

@@ -22,5 +22,7 @@ services:
         value: blender-outputs
       - key: MCP_API_KEY
         sync: false
+      - key: LLM_PROVIDER
+        value: gemini
     healthCheckPath: /health
     autoDeploy: true

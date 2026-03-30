@@ -29,14 +29,22 @@ from starlette.responses import JSONResponse
 from starlette.routing import Mount, Route
 
 from tools.render_tools import (
+    impl_generate_abstract_bg,
     impl_generate_animation,
     impl_generate_chart,
+    impl_generate_code_animation,
+    impl_generate_countdown,
     impl_generate_data_viz,
+    impl_generate_flowchart,
     impl_generate_latex,
+    impl_generate_logo_reveal,
     impl_generate_lower_third,
+    impl_generate_network_graph,
     impl_generate_scene,
     impl_generate_thumbnail,
+    impl_generate_timeline,
     impl_generate_title_card,
+    impl_generate_3d_math,
     impl_generate_ui_mockup,
 )
 from tools.job_queue import queue as _job_queue
@@ -313,20 +321,272 @@ async def blender_generate_chart(
     ))
 
 
+@mcp.tool()
+async def blender_generate_flowchart(
+    nodes: str = "[]",
+    edges: str = "[]",
+    title: str = "Process Flowchart",
+    duration: float = 12.0,
+    style: str = "dark",
+) -> str:
+    """
+    Generate an animated Manim flowchart with process boxes, decision diamonds, and arrows.
+
+    Args:
+        nodes:    JSON array of node objects: [{"id":"start","label":"Start","type":"start"},
+                  {"id":"step1","label":"Process Data","type":"process"},
+                  {"id":"decide","label":"Valid?","type":"decision"},...]
+                  type: "start" | "process" | "decision" | "end"
+        edges:    JSON array of connections: [{"from":"start","to":"step1"},
+                  {"from":"decide","to":"step2","label":"Yes"},...]
+        title:    Chart heading
+        duration: Clip length in seconds
+        style:    "dark" | "light" | "blue"
+
+    Returns JSON: {"video_url": str, "duration": float, "title": str}
+    """
+    _j = __import__("json")
+    return json.dumps(await impl_generate_flowchart(
+        nodes=_j.loads(nodes), edges=_j.loads(edges),
+        title=title, duration=duration, style=style,
+    ))
+
+
+@mcp.tool()
+async def blender_generate_3d_math(
+    scene_type: str = "surface",
+    title: str = "3D Mathematics",
+    function: str = "wave",
+    duration: float = 12.0,
+    color: str = "BLUE",
+) -> str:
+    """
+    Generate a 3D mathematics animation using Manim's ThreeDScene.
+
+    Args:
+        scene_type: "surface" (3D function surface), "curve" (parametric helix),
+                    "vector_field" (2D arrow vector field), "torus" (spinning torus)
+        title:      Title text displayed on screen
+        function:   For scene_type="surface": "wave" | "sin" | "cos" | "saddle" | "paraboloid" | "ripple"
+        duration:   Clip length in seconds
+        color:      Manim colour name: "BLUE" | "RED" | "GREEN" | "GOLD" | "PURPLE" | "TEAL"
+
+    Returns JSON: {"video_url": str, "duration": float, "scene_type": str}
+    """
+    return json.dumps(await impl_generate_3d_math(
+        scene_type=scene_type, title=title, function=function,
+        duration=duration, color=color,
+    ))
+
+
+@mcp.tool()
+async def blender_generate_code_animation(
+    code: str = "",
+    language: str = "python",
+    title: str = "Code Walkthrough",
+    highlight_lines: str = "[]",
+    reveal_mode: str = "line_by_line",
+    duration: float = 12.0,
+    style: str = "monokai",
+) -> str:
+    """
+    Generate an animated code syntax-highlighting clip — ideal for tech tutorials.
+
+    Args:
+        code:            The source code string to display and animate
+        language:        Syntax highlighting language: "python" | "javascript" | "rust" |
+                         "cpp" | "java" | "bash" | "sql" | "typescript" | "go"
+        title:           Heading shown above the code block
+        highlight_lines: JSON array of 1-indexed line numbers to highlight after reveal
+                         e.g. "[3, 7, 11]"
+        reveal_mode:     "line_by_line" (default) | "all_at_once" | "block"
+        duration:        Clip length in seconds
+        style:           Syntax theme: "monokai" | "dracula" | "solarized-dark"
+
+    Returns JSON: {"video_url": str, "duration": float, "language": str}
+    """
+    _j = __import__("json")
+    return json.dumps(await impl_generate_code_animation(
+        code=code, language=language, title=title,
+        highlight_lines=_j.loads(highlight_lines),
+        reveal_mode=reveal_mode, duration=duration, style=style,
+    ))
+
+
+@mcp.tool()
+async def blender_generate_timeline(
+    events: str = "[]",
+    title: str = "Project Timeline",
+    duration: float = 12.0,
+    style: str = "dark",
+    orientation: str = "horizontal",
+) -> str:
+    """
+    Generate an animated timeline / roadmap / Gantt-style clip.
+
+    Args:
+        events:      JSON array of event objects:
+                     [{"date":"Jan","label":"Project Kickoff","color":"BLUE"},
+                      {"date":"Mar","label":"MVP Launch","color":"GREEN"},...]
+                     color: "BLUE"|"RED"|"GREEN"|"YELLOW"|"ORANGE"|"PURPLE"|"TEAL"|"GOLD"
+        title:       Heading text
+        duration:    Clip length in seconds
+        style:       "dark" | "light" | "gradient"
+        orientation: "horizontal" (default) | "vertical"
+
+    Returns JSON: {"video_url": str, "duration": float, "title": str}
+    """
+    _j = __import__("json")
+    return json.dumps(await impl_generate_timeline(
+        events=_j.loads(events), title=title, duration=duration,
+        style=style, orientation=orientation,
+    ))
+
+
+@mcp.tool()
+async def blender_generate_network_graph(
+    nodes: str = "[]",
+    edges: str = "[]",
+    title: str = "Network Graph",
+    layout: str = "radial",
+    duration: float = 12.0,
+    style: str = "dark",
+) -> str:
+    """
+    Generate an animated network / knowledge graph with nodes and edges.
+
+    Args:
+        nodes:   JSON array: [{"id":"A","label":"Machine Learning","color":"BLUE"},...]
+                 color: "BLUE"|"RED"|"GREEN"|"YELLOW"|"ORANGE"|"PURPLE"|"TEAL"|"GOLD"|"PINK"
+                 size:  float (optional, default 0.35) — node circle radius
+        edges:   JSON array: [{"from":"A","to":"B"},{"from":"A","to":"C","label":"uses","directed":true},...]
+        title:   Heading text
+        layout:  "radial" (hub-and-spoke) | "circular" | "spring"
+        duration: Clip length in seconds
+        style:   "dark" | "neon"
+
+    Returns JSON: {"video_url": str, "duration": float, "title": str}
+    """
+    _j = __import__("json")
+    return json.dumps(await impl_generate_network_graph(
+        nodes=_j.loads(nodes), edges=_j.loads(edges),
+        title=title, layout=layout, duration=duration, style=style,
+    ))
+
+
+@mcp.tool()
+async def blender_generate_logo_reveal(
+    text: str = "BRAND",
+    tagline: str = "",
+    style: str = "extrude_reveal",
+    color: str = "[0.1, 0.5, 1.0, 1.0]",
+    bg_color: str = "[0.02, 0.02, 0.05, 1.0]",
+    duration: float = 6.0,
+) -> str:
+    """
+    Generate a 3D extruded text / logo reveal animation in Blender.
+
+    Args:
+        text:     Brand name or main text to extrude and reveal
+        tagline:  Optional second line (smaller text below)
+        style:    "extrude_reveal" (Z-scale grow-in, default) | "zoom_in" | "split" | "typewriter"
+        color:    JSON RGBA float array for text material e.g. "[0.1, 0.5, 1.0, 1.0]"
+        bg_color: JSON RGBA float array for background e.g. "[0.02, 0.02, 0.05, 1.0]"
+        duration: Clip length in seconds
+
+    Returns JSON: {"video_url": str, "duration": float, "text": str, "style": str}
+    """
+    _j = __import__("json")
+    return json.dumps(await impl_generate_logo_reveal(
+        text=text, tagline=tagline, style=style,
+        color=_j.loads(color), bg_color=_j.loads(bg_color),
+        duration=duration,
+    ))
+
+
+@mcp.tool()
+async def blender_generate_abstract_bg(
+    style: str = "geometric",
+    primary_color: str = "[0.05, 0.2, 0.8, 1.0]",
+    secondary_color: str = "[0.8, 0.1, 0.5, 1.0]",
+    duration: float = 8.0,
+) -> str:
+    """
+    Generate an animated abstract background loop for use as a video backdrop or overlay.
+
+    Args:
+        style:           "geometric" (orbiting shapes, default) | "waves" | "particles" |
+                         "grid" (retro neon wireframe) | "gradient"
+        primary_color:   JSON RGBA float array e.g. "[0.05, 0.2, 0.8, 1.0]"
+        secondary_color: JSON RGBA float array e.g. "[0.8, 0.1, 0.5, 1.0]"
+        duration:        Clip length in seconds
+
+    Returns JSON: {"video_url": str, "duration": float, "style": str}
+    """
+    _j = __import__("json")
+    return json.dumps(await impl_generate_abstract_bg(
+        style=style,
+        primary_color=_j.loads(primary_color),
+        secondary_color=_j.loads(secondary_color),
+        duration=duration,
+    ))
+
+
+@mcp.tool()
+async def blender_generate_countdown(
+    start_number: int = 5,
+    end_number: int = 1,
+    style: str = "bold",
+    color: str = "[0.1, 0.6, 1.0, 1.0]",
+    bg_color: str = "[0.02, 0.02, 0.05, 1.0]",
+    show_ring: bool = True,
+    duration: float = 0.0,
+) -> str:
+    """
+    Generate a 3D animated countdown timer in Blender.
+
+    Args:
+        start_number: Count from this number (e.g. 10)
+        end_number:   Count to this number (e.g. 1 or 0)
+        style:        "bold" | "neon" | "minimal" | "cinematic"
+        color:        JSON RGBA float array for number material
+        bg_color:     JSON RGBA float array for background
+        show_ring:    If true, adds an animated rotating ring around the number
+        duration:     Total clip duration in seconds (0 = auto: 1 second per count)
+
+    Returns JSON: {"video_url": str, "duration": float, "start_number": int, "end_number": int}
+    """
+    _j = __import__("json")
+    dur = float(duration) if duration > 0 else None
+    return json.dumps(await impl_generate_countdown(
+        start_number=start_number, end_number=end_number,
+        style=style, color=_j.loads(color), bg_color=_j.loads(bg_color),
+        show_ring=show_ring, duration=dur,
+    ))
+
+
 # ---------------------------------------------------------------------------
 # REST API (for Rust BlenderMCPClient)
 # ---------------------------------------------------------------------------
 
 TOOL_HANDLERS = {
-    "blender_generate_scene":       impl_generate_scene,
-    "blender_generate_thumbnail":   impl_generate_thumbnail,
-    "blender_generate_title_card":  impl_generate_title_card,
-    "blender_generate_data_viz":    impl_generate_data_viz,
-    "blender_generate_lower_third": impl_generate_lower_third,
-    "blender_generate_latex":       impl_generate_latex,
-    "blender_generate_ui_mockup":   impl_generate_ui_mockup,
-    "blender_generate_animation":   impl_generate_animation,
-    "blender_generate_chart":       impl_generate_chart,
+    "blender_generate_scene":         impl_generate_scene,
+    "blender_generate_thumbnail":     impl_generate_thumbnail,
+    "blender_generate_title_card":    impl_generate_title_card,
+    "blender_generate_data_viz":      impl_generate_data_viz,
+    "blender_generate_lower_third":   impl_generate_lower_third,
+    "blender_generate_latex":         impl_generate_latex,
+    "blender_generate_ui_mockup":     impl_generate_ui_mockup,
+    "blender_generate_animation":     impl_generate_animation,
+    "blender_generate_chart":         impl_generate_chart,
+    "blender_generate_flowchart":     impl_generate_flowchart,
+    "blender_generate_3d_math":       impl_generate_3d_math,
+    "blender_generate_code_animation": impl_generate_code_animation,
+    "blender_generate_timeline":      impl_generate_timeline,
+    "blender_generate_network_graph": impl_generate_network_graph,
+    "blender_generate_logo_reveal":   impl_generate_logo_reveal,
+    "blender_generate_abstract_bg":   impl_generate_abstract_bg,
+    "blender_generate_countdown":     impl_generate_countdown,
 }
 
 

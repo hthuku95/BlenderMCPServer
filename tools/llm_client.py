@@ -177,21 +177,16 @@ async def generate_text(
     resolved = _resolve(provider)
 
     if resolved == "gemini":
-        try:
-            import google.generativeai as genai
-            genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
-            model = genai.GenerativeModel(
-                _GEMINI_MODEL,
-                generation_config={"temperature": temperature, "max_output_tokens": max_tokens},
-            )
-            resp = model.generate_content(prompt)
-            return resp.text, "gemini"
-        except Exception as e:
-            if not _has_claude():
-                raise RuntimeError(f"Gemini failed and no Claude fallback: {e}") from e
-            resolved = "claude"
+        import google.generativeai as genai
+        genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
+        model = genai.GenerativeModel(
+            _GEMINI_MODEL,
+            generation_config={"temperature": temperature, "max_output_tokens": max_tokens},
+        )
+        resp = model.generate_content(prompt)
+        return resp.text, "gemini"
 
-    # claude path (direct or after Gemini failure)
+    # claude path (only reached when LLM_PROVIDER=claude explicitly)
     import anthropic
     client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
     resp = client.messages.create(

@@ -123,20 +123,15 @@ def get_chat_model(
     resolved = _resolve(provider)
 
     if resolved == "gemini":
-        try:
-            from langchain_google_genai import ChatGoogleGenerativeAI  # type: ignore
-            return ChatGoogleGenerativeAI(
-                model=_GEMINI_MODEL,
-                google_api_key=os.getenv("GEMINI_API_KEY"),
-                temperature=temperature,
-                max_output_tokens=max_tokens,
-            )
-        except Exception:
-            if not _has_claude():
-                raise
-            # fall through to Claude
+        from langchain_google_genai import ChatGoogleGenerativeAI  # type: ignore
+        return ChatGoogleGenerativeAI(
+            model=_GEMINI_MODEL,
+            google_api_key=os.getenv("GEMINI_API_KEY"),
+            temperature=temperature,
+            max_output_tokens=max_tokens,
+        )
 
-    # claude
+    # claude (only reached if LLM_PROVIDER=claude explicitly)
     from langchain_anthropic import ChatAnthropic  # type: ignore
     return ChatAnthropic(
         model=_CLAUDE_MODEL,
@@ -182,25 +177,18 @@ async def generate_text(
     resolved = _resolve(provider)
 
     if resolved == "gemini":
-        try:
-            from google import genai as google_genai  # new google-genai SDK
-            client = google_genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
-            response = client.models.generate_content(
-                model=_GEMINI_MODEL,
-                contents=prompt,
-                config=google_genai.types.GenerateContentConfig(
-                    temperature=temperature,
-                    max_output_tokens=max_tokens,
-                ),
-            )
-            return response.text, "gemini"
-        except Exception as gemini_err:
-            # Model unavailable or quota hit — fall back to Claude if available
-            if not _has_claude():
-                raise RuntimeError(
-                    f"Gemini generate_text failed and no ANTHROPIC_API_KEY set: {gemini_err}"
-                ) from gemini_err
-            # fall through to Claude below
+        from google import genai as google_genai  # new google-genai SDK
+        from google.genai import types as genai_types
+        client = google_genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+        response = client.models.generate_content(
+            model=_GEMINI_MODEL,
+            contents=prompt,
+            config=genai_types.GenerateContentConfig(
+                temperature=temperature,
+                max_output_tokens=max_tokens,
+            ),
+        )
+        return response.text, "gemini"
 
     # claude path
     import anthropic

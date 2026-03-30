@@ -40,8 +40,8 @@ total_frames = int(duration * fps)
 scene.frame_start = 1
 scene.frame_end = total_frames
 scene.render.fps = fps
-scene.render.resolution_x = 1280
-scene.render.resolution_y = 720
+scene.render.resolution_x = 854
+scene.render.resolution_y = 480
 scene.render.engine = "BLENDER_WORKBENCH"  # Fast CPU-only
 scene.display.shading.color_type = 'MATERIAL'  # CRITICAL: read mat.diffuse_color
 scene.display.shading.light = 'STUDIO'
@@ -101,14 +101,7 @@ for i, (label, value) in enumerate(zip(labels, values)):
     bar.keyframe_insert(data_path="location", frame=grow_end)
 
     mat = bpy.data.materials.new(f"Bar{i}")
-    mat.use_nodes = True
-    bsdf = mat.node_tree.nodes["Principled BSDF"]
-    bsdf.inputs["Base Color"].default_value = color
-    bsdf.inputs["Metallic"].default_value = 0.3
-    bsdf.inputs["Roughness"].default_value = 0.3
-    bsdf.inputs["Emission"].default_value = color
-    bsdf.inputs["Emission Strength"].default_value = 0.6
-    mat.diffuse_color = color  # Workbench reads this
+    mat.diffuse_color = color  # Workbench reads this; skip node setup for speed
     bar.data.materials.append(mat)
 
     # Label below bar
@@ -118,11 +111,6 @@ for i, (label, value) in enumerate(zip(labels, values)):
     lbl.data.size = 0.32
     lbl.data.extrude = 0.015
     lbl_mat = bpy.data.materials.new(f"Lbl{i}")
-    lbl_mat.use_nodes = True
-    l_bsdf = lbl_mat.node_tree.nodes["Principled BSDF"]
-    l_bsdf.inputs["Base Color"].default_value = (0.85, 0.85, 0.85, 1.0)
-    l_bsdf.inputs["Emission"].default_value = (0.85, 0.85, 0.85, 1.0)
-    l_bsdf.inputs["Emission Strength"].default_value = 0.5
     lbl_mat.diffuse_color = (0.85, 0.85, 0.85, 1.0)
     lbl.data.materials.append(lbl_mat)
 
@@ -134,11 +122,6 @@ for i, (label, value) in enumerate(zip(labels, values)):
     val_lbl.data.size = 0.28
     val_lbl.data.extrude = 0.01
     val_mat = bpy.data.materials.new(f"Val{i}")
-    val_mat.use_nodes = True
-    v_bsdf = val_mat.node_tree.nodes["Principled BSDF"]
-    v_bsdf.inputs["Base Color"].default_value = color
-    v_bsdf.inputs["Emission"].default_value = color
-    v_bsdf.inputs["Emission Strength"].default_value = 1.2
     val_mat.diffuse_color = color
     val_lbl.data.materials.append(val_mat)
 
@@ -146,9 +129,6 @@ for i, (label, value) in enumerate(zip(labels, values)):
 bpy.ops.mesh.primitive_plane_add(size=24, location=(0, 0, -0.51))
 floor = bpy.context.active_object
 fl_mat = bpy.data.materials.new("Floor")
-fl_mat.use_nodes = True
-fl_mat.node_tree.nodes["Principled BSDF"].inputs["Base Color"].default_value = (0.03, 0.03, 0.07, 1.0)
-fl_mat.node_tree.nodes["Principled BSDF"].inputs["Roughness"].default_value = 0.95
 fl_mat.diffuse_color = (0.03, 0.03, 0.07, 1.0)
 floor.data.materials.append(fl_mat)
 
@@ -160,11 +140,6 @@ if title:
     t_obj.data.size = 0.65
     t_obj.data.extrude = 0.03
     t_mat = bpy.data.materials.new("ChartTitle")
-    t_mat.use_nodes = True
-    t_bsdf = t_mat.node_tree.nodes["Principled BSDF"]
-    t_bsdf.inputs["Base Color"].default_value = (1.0, 1.0, 1.0, 1.0)
-    t_bsdf.inputs["Emission"].default_value = (1.0, 1.0, 1.0, 1.0)
-    t_bsdf.inputs["Emission Strength"].default_value = 1.0
     t_mat.diffuse_color = (1.0, 1.0, 1.0, 1.0)
     t_obj.data.materials.append(t_mat)
 

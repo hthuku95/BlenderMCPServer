@@ -132,9 +132,9 @@ def get_chat_model(
                 max_output_tokens=max_tokens,
             )
         except Exception:
-            if not _has_claude():
+            if _PROVIDER != "auto" or not _has_claude():
                 raise
-            # fall through to Claude
+            # fall through to Claude (auto mode only)
 
     # claude
     from langchain_anthropic import ChatAnthropic  # type: ignore
@@ -193,14 +193,15 @@ async def generate_text(
                     max_output_tokens=max_tokens,
                 ),
             )
-            return response.text, "gemini"
+            text = response.text if hasattr(response, "text") else response.candidates[0].content.parts[0].text
+            return text, "gemini"
         except Exception as gemini_err:
-            # Model unavailable or quota hit — fall back to Claude if available
-            if not _has_claude():
+            # Only fall back to Claude when LLM_PROVIDER="auto" (not when explicitly "gemini")
+            if _PROVIDER != "auto" or not _has_claude():
                 raise RuntimeError(
-                    f"Gemini generate_text failed and no ANTHROPIC_API_KEY set: {gemini_err}"
+                    f"Gemini generate_text failed: {gemini_err}"
                 ) from gemini_err
-            # fall through to Claude below
+            # fall through to Claude below (auto mode only)
 
     # claude path
     import anthropic

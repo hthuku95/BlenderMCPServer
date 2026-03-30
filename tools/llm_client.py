@@ -178,12 +178,11 @@ async def generate_text(
 
     if resolved == "gemini":
         from google import genai as google_genai  # new google-genai SDK (v1.69.0+)
-        from google.genai import types as genai_types
         client = google_genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
         response = client.models.generate_content(
             model=_GEMINI_MODEL,
             contents=prompt,
-            config=genai_types.GenerateContentConfig(
+            config=google_genai.types.GenerateContentConfig(
                 temperature=temperature,
                 max_output_tokens=max_tokens,
             ),

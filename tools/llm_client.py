@@ -193,7 +193,17 @@ async def generate_text(
                     max_output_tokens=max_tokens,
                 ),
             )
-            text = response.text if hasattr(response, "text") else response.candidates[0].content.parts[0].text
+            # response.text raises ValueError for multi-part or blocked responses
+            try:
+                text = response.text
+            except (ValueError, AttributeError):
+                # Try manual extraction from candidates
+                try:
+                    text = response.candidates[0].content.parts[0].text
+                except (IndexError, AttributeError) as inner_err:
+                    raise RuntimeError(
+                        f"Gemini returned empty/blocked response: {inner_err}"
+                    ) from inner_err
             return text, "gemini"
         except Exception as gemini_err:
             # Only fall back to Claude when LLM_PROVIDER="auto" (not when explicitly "gemini")

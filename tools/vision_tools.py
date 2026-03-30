@@ -67,41 +67,47 @@ def _extract_json(raw: str) -> dict | None:
 
 def _gemini_vision_single(prompt: str, image_path_or_url: str) -> str:
     """Call Gemini with one image. Returns raw text response."""
-    import google.generativeai as genai
+    from google import genai as google_genai
+    from google.genai import types as genai_types
 
     api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key:
         raise RuntimeError("GEMINI_API_KEY not set")
 
-    genai.configure(api_key=api_key)
-    model = genai.GenerativeModel("gemini-2.5-flash")
-
+    client = google_genai.Client(api_key=api_key)
     media_type, b64 = _encode_image(image_path_or_url)
-    image_part = {"mime_type": media_type, "data": b64}
 
-    response = model.generate_content([image_part, prompt])
+    response = client.models.generate_content(
+        model="gemini-2.5-flash",
+        contents=[
+            genai_types.Part.from_bytes(data=__import__("base64").b64decode(b64), mime_type=media_type),
+            prompt,
+        ],
+    )
     return response.text
 
 
 def _gemini_vision_two(prompt: str, image1: str, image2: str) -> str:
     """Call Gemini with two images (for render vs reference comparison)."""
-    import google.generativeai as genai
+    from google import genai as google_genai
+    from google.genai import types as genai_types
 
     api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key:
         raise RuntimeError("GEMINI_API_KEY not set")
 
-    genai.configure(api_key=api_key)
-    model = genai.GenerativeModel("gemini-2.5-flash")
-
+    client = google_genai.Client(api_key=api_key)
     mt1, b1 = _encode_image(image1)
     mt2, b2 = _encode_image(image2)
 
-    response = model.generate_content([
-        {"mime_type": mt1, "data": b1},
-        {"mime_type": mt2, "data": b2},
-        prompt,
-    ])
+    response = client.models.generate_content(
+        model="gemini-2.5-flash",
+        contents=[
+            genai_types.Part.from_bytes(data=__import__("base64").b64decode(b1), mime_type=mt1),
+            genai_types.Part.from_bytes(data=__import__("base64").b64decode(b2), mime_type=mt2),
+            prompt,
+        ],
+    )
     return response.text
 
 

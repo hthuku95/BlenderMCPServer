@@ -183,16 +183,19 @@ async def generate_text(
 
     if resolved == "gemini":
         try:
-            import google.generativeai as genai
-            genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
-            model = genai.GenerativeModel(
-                _GEMINI_MODEL,
-                generation_config={"temperature": temperature, "max_output_tokens": max_tokens},
+            from google import genai as google_genai  # new google-genai SDK
+            client = google_genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+            response = client.models.generate_content(
+                model=_GEMINI_MODEL,
+                contents=prompt,
+                config=google_genai.types.GenerateContentConfig(
+                    temperature=temperature,
+                    max_output_tokens=max_tokens,
+                ),
             )
-            resp = model.generate_content(prompt)
-            return resp.text, "gemini"
+            return response.text, "gemini"
         except Exception as gemini_err:
-            # Model deprecated or quota hit — fall back to Claude if available
+            # Model unavailable or quota hit — fall back to Claude if available
             if not _has_claude():
                 raise RuntimeError(
                     f"Gemini generate_text failed and no ANTHROPIC_API_KEY set: {gemini_err}"

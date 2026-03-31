@@ -112,7 +112,7 @@ if inst_type == "cubes":
 elif inst_type == "crystals":
     bpy.ops.mesh.primitive_ico_sphere_add(radius=base_scale, subdivisions=0, location=(1001, 0, 0))
 else:
-    bpy.ops.mesh.primitive_uv_sphere_add(radius=base_scale * 0.7, segments=6, rings=4, location=(1001, 0, 0))
+    bpy.ops.mesh.primitive_uv_sphere_add(radius=base_scale * 0.7, segments=6, ring_count=4, location=(1001, 0, 0))
 inst2 = bpy.context.active_object
 inst2.name = "InstanceObj2"
 inst_mat2 = make_mat("InstMat2", second_color, metallic=0.5, roughness=0.2)

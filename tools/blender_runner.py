@@ -3,7 +3,6 @@
 import asyncio
 import json
 import os
-import subprocess
 import tempfile
 from pathlib import Path
 
@@ -11,15 +10,16 @@ from pathlib import Path
 BLENDER_BIN = os.getenv("BLENDER_BIN", "blender")
 
 
-def _syntax_check(script_path: str) -> None:
+async def _syntax_check(script_path: str) -> None:
     """Raise ValueError if the script has a Python syntax error."""
-    result = subprocess.run(
-        ["python3", "-m", "py_compile", script_path],
-        capture_output=True,
-        text=True,
+    proc = await asyncio.create_subprocess_exec(
+        "python3", "-m", "py_compile", script_path,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
     )
-    if result.returncode != 0:
-        raise ValueError(f"Script syntax error: {result.stderr}")
+    _, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=10)
+    if proc.returncode != 0:
+        raise ValueError(f"Script syntax error: {stderr_b.decode()}")
 
 
 async def run_blender_script(
@@ -35,7 +35,7 @@ async def run_blender_script(
 
     Returns the parsed RESULT dict on success; raises RuntimeError on failure.
     """
-    _syntax_check(script_path)
+    await _syntax_check(script_path)
 
     args_json = json.dumps(args)
     # Use xvfb-run to provide a virtual display for Blender (required even in --background mode)

@@ -223,16 +223,20 @@ async def _option_b_node(state: LatexState) -> LatexState:
     except RuntimeError as e:
         return {**state, "error": f"Blender scene render failed: {e}"}
 
-    # Step 3 — composite
+    # Step 3 — composite (run in executor to avoid blocking asyncio event loop)
     try:
-        final = composite_manim_over_blender(
-            blender_video_path=scene_video,
-            equation_video_path=eq_video,
-            output_path=output_mp4,
-            eq_x_position=0.5,
-            eq_y_position=0.5,
-            eq_scale=1.0,
-            fps=60,
+        loop = asyncio.get_event_loop()
+        final = await loop.run_in_executor(
+            None,
+            lambda: composite_manim_over_blender(
+                blender_video_path=scene_video,
+                equation_video_path=eq_video,
+                output_path=output_mp4,
+                eq_x_position=0.5,
+                eq_y_position=0.5,
+                eq_scale=1.0,
+                fps=60,
+            )
         )
     except Exception as e:
         return {**state, "error": f"Compositing failed: {e}"}

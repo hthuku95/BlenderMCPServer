@@ -135,10 +135,19 @@ class JobQueue:
                 self._pending.task_done()
                 continue
 
+            # Hard cap per-job: prevents orphaned jobs from monopolising the
+            # worker and starving subsequent renders. Rust polls for 900s, so
+            # 720s gives 180s margin for the result to be seen before Rust
+            # times out.  Blender renders are also capped at 600s each, so
+            # 720s accommodates one full render attempt plus overhead.
+            _JOB_TIMEOUT = int(__import__("os").getenv("JOB_TIMEOUT_SECS", "720"))
             try:
-                result = await handler(**args)
+                result = await asyncio.wait_for(handler(**args), timeout=_JOB_TIMEOUT)
                 status.state = State.COMPLETED
                 status.result = result
+            except asyncio.TimeoutError:
+                status.state = State.FAILED
+                status.error = f"Job exceeded maximum runtime of {_JOB_TIMEOUT}s"
             except Exception as exc:
                 status.state = State.FAILED
                 status.error = str(exc)
@@ -148,7 +157,8 @@ class JobQueue:
 
 
 # ---------------------------------------------------------------------------
-# Singleton
+# Singleton — default 1 worker: Render Standard has 1 vCPU, concurrent
+# Blender subprocesses thrash CPU and both time out.  Override via env var.
 # ---------------------------------------------------------------------------
 
-queue = JobQueue(max_workers=int(__import__("os").getenv("JOB_QUEUE_WORKERS", "2")))
+queue = JobQueue(max_workers=int(__import__("os").getenv("JOB_QUEUE_WORKERS", "1")))

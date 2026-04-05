@@ -1104,6 +1104,58 @@ async def rest_jobs(request: Request) -> JSONResponse:
     return await rest_list_jobs(request)
 
 
+async def rest_analyze_video(request: Request) -> JSONResponse:
+    """
+    POST /api/analyze-video — Analyze a video for viral clip moments.
+
+    Uses BLENDER_GEMINI_API_KEY (dedicated quota, separate from the Rust app's keys).
+    Called by the Rust BlenderMCPClient as a fallback when Gemini returns 429.
+
+    Body JSON:
+        video_url              — YouTube URL or R2 presigned URL
+        clips_requested        — how many clips to find (default 3)
+        min_duration           — minimum clip length in seconds (default 30)
+        max_duration           — maximum clip length in seconds (default 90)
+        high_performing_factors — optional list of viral factor hints
+
+    Returns the VideoAnalysis JSON schema that the Rust side expects.
+    """
+    if not _check_api_key(request):
+        return JSONResponse({"error": "Unauthorized"}, status_code=401)
+
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
+
+    video_url = body.get("video_url", "").strip()
+    if not video_url:
+        return JSONResponse({"error": "video_url is required"}, status_code=400)
+
+    clips_requested = int(body.get("clips_requested", 3))
+    min_duration = float(body.get("min_duration", 30.0))
+    max_duration = float(body.get("max_duration", 90.0))
+    factors = body.get("high_performing_factors", [])
+
+    try:
+        from tools.media_analyzer import analyze_video_for_clips
+        result = await analyze_video_for_clips(
+            video_url=video_url,
+            clips_requested=clips_requested,
+            min_duration=min_duration,
+            max_duration=max_duration,
+            high_performing_factors=factors,
+        )
+        return JSONResponse(result)
+    except RuntimeError as exc:
+        # 429 from Gemini — pass through so Rust caller can log it
+        msg = str(exc)
+        status = 429 if "429" in msg else 502
+        return JSONResponse({"error": msg}, status_code=status)
+    except Exception as exc:
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+
 # ---------------------------------------------------------------------------
 # Combined Starlette app
 # ---------------------------------------------------------------------------
@@ -1112,6 +1164,7 @@ rest_routes = [
     Route("/health",                rest_health),
     Route("/api/call_tool",         rest_call_tool,   methods=["POST"]),
     Route("/api/director",          rest_director,    methods=["POST"]),
+    Route("/api/analyze-video",     rest_analyze_video, methods=["POST"]),
     # Phase 5 — async job queue
     Route("/api/jobs",              rest_jobs,        methods=["GET", "POST"]),
     Route("/api/jobs/{job_id}",     rest_get_job,     methods=["GET"]),

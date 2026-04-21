@@ -182,6 +182,11 @@ def analyse_reference_image(image_path_or_url: str) -> dict:
         mood: str                    — "cinematic" | "minimal" | "energetic" | "calm" | "dark"
         key_objects: list[str]       — main scene elements to reproduce
         blender_reference_mode: int  — 1 (Image overlay), 2 (Camera BG), or 3 (World HDRI)
+        composition_focus: str       — "centered" | "left_weighted" | "right_weighted" | "layered_depth"
+        movement_style: str          — "locked" | "slow_push" | "orbit" | "parallax"
+        material_style: str          — "glossy" | "matte" | "glass" | "mixed"
+        scene_layers: list[str]      — foreground / subject / support / background hints
+        verification_focus: list[str]— aspects QA should focus on preserving
         notes: str                   — free-text advice for the bpy script generator
         _provider: str               — "gemini" or "claude" (which model answered)
     """
@@ -195,12 +200,19 @@ Return ONLY valid JSON with these fields:
   "mood": "cinematic|minimal|energetic|calm|dark",
   "key_objects": ["object1", "object2"],
   "blender_reference_mode": 1,
+  "composition_focus": "centered|left_weighted|right_weighted|layered_depth",
+  "movement_style": "locked|slow_push|orbit|parallax",
+  "material_style": "glossy|matte|glass|mixed",
+  "scene_layers": ["foreground cue", "primary subject", "support element", "background cue"],
+  "verification_focus": ["brand silhouette", "hero object", "color palette"],
   "notes": "free text advice for the script generator"
 }
 blender_reference_mode guide:
   1 = Simple image: flat design, 2D, logo, UI screenshot
   2 = Photo/realistic: product shot, portrait, real scene
   3 = Environment/landscape: outdoor, sky, HDRI-worthy scene
+scene_layers should describe the main visual strata a 3D scene should preserve.
+verification_focus should name the most important things that must survive re-renders.
 """
 
     _FALLBACK = {
@@ -211,6 +223,11 @@ blender_reference_mode guide:
         "mood": "cinematic",
         "key_objects": [],
         "blender_reference_mode": 2,
+        "composition_focus": "centered",
+        "movement_style": "slow_push",
+        "material_style": "mixed",
+        "scene_layers": [],
+        "verification_focus": [],
         "notes": "",
         "_provider": "fallback",
     }
@@ -221,6 +238,11 @@ blender_reference_mode guide:
             raw = _gemini_vision_single(prompt, image_path_or_url)
             result = _extract_json(raw)
             if result:
+                result.setdefault("composition_focus", "centered")
+                result.setdefault("movement_style", "slow_push")
+                result.setdefault("material_style", "mixed")
+                result.setdefault("scene_layers", [])
+                result.setdefault("verification_focus", [])
                 result["_provider"] = "gemini"
                 return result
         except Exception:
@@ -232,6 +254,11 @@ blender_reference_mode guide:
             raw = _claude_vision_single(prompt, image_path_or_url)
             result = _extract_json(raw)
             if result:
+                result.setdefault("composition_focus", "centered")
+                result.setdefault("movement_style", "slow_push")
+                result.setdefault("material_style", "mixed")
+                result.setdefault("scene_layers", [])
+                result.setdefault("verification_focus", [])
                 result["_provider"] = "claude"
                 return result
         except Exception:

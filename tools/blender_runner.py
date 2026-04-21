@@ -3,8 +3,8 @@
 import asyncio
 import json
 import os
+import shutil
 import tempfile
-from pathlib import Path
 
 
 BLENDER_BIN = os.getenv("BLENDER_BIN", "blender")
@@ -36,6 +36,15 @@ async def run_blender_script(
     Returns the parsed RESULT dict on success; raises RuntimeError on failure.
     """
     await _syntax_check(script_path)
+
+    if shutil.which("xvfb-run") is None:
+        raise RuntimeError("xvfb-run is not installed or not available on PATH")
+
+    if shutil.which(BLENDER_BIN) is None:
+        raise RuntimeError(
+            f"Blender binary '{BLENDER_BIN}' was not found on PATH. "
+            "Set BLENDER_BIN to the installed executable path before rendering."
+        )
 
     args_json = json.dumps(args)
     # Use xvfb-run to provide a virtual display for Blender (required even in --background mode)

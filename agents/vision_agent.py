@@ -14,12 +14,16 @@ This agent is used when blender_generate_scene() receives a `reference_image_url
 from __future__ import annotations
 
 import json
+import logging
 import os
 import tempfile
 from pathlib import Path
 from typing import TypedDict
 
 from langgraph.graph import END, StateGraph
+
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -83,6 +87,17 @@ async def _analyse_reference_node(state: VisionState) -> VisionState:
     except Exception as e:
         return {**state, "error": f"Vision analysis failed: {e}"}
 
+    logger.info(
+        "vision_agent.reference_analyzed provider=%s mode=%s camera=%s movement=%s material=%s layers=%s verify=%s",
+        params.get("_provider", "unknown"),
+        params.get("blender_reference_mode", 2),
+        params.get("camera_angle", "front"),
+        params.get("movement_style", "slow_push"),
+        params.get("material_style", "mixed"),
+        params.get("scene_layers", []),
+        params.get("verification_focus", []),
+    )
+
     return {**state, "scene_params": params, "error": ""}
 
 
@@ -114,6 +129,12 @@ async def _render_with_reference_node(state: VisionState) -> VisionState:
                 "camera_angle": params.get("camera_angle", "front"),
                 "mood": params.get("mood", "cinematic"),
                 "key_objects": params.get("key_objects", []),
+                "composition_focus": params.get("composition_focus", "centered"),
+                "movement_style": params.get("movement_style", "slow_push"),
+                "material_style": params.get("material_style", "mixed"),
+                "scene_layers": params.get("scene_layers", []),
+                "verification_focus": params.get("verification_focus", []),
+                "notes": params.get("notes", ""),
                 "corrections": {},
                 "prompt": state.get("prompt", ""),
             },
@@ -121,6 +142,15 @@ async def _render_with_reference_node(state: VisionState) -> VisionState:
         )
     except RuntimeError as e:
         return {**state, "error": f"Blender reference render failed: {e}"}
+
+    logger.info(
+        "vision_agent.reference_render_complete output=%s mode=%s camera=%s movement=%s frames=%s",
+        result.get("output_path", output_mp4),
+        params.get("blender_reference_mode", 2),
+        params.get("camera_angle", "front"),
+        params.get("movement_style", "slow_push"),
+        result.get("frames"),
+    )
 
     return {
         **state,

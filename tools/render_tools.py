@@ -5,12 +5,14 @@ Imported by both server.py (REST endpoint) and agents/director.py (LangGraph).
 Each impl_* function drives a Blender or Manim script, uploads the result to R2,
 and returns a plain dict with a video_url or image_url.
 """
+import logging
 import os
 import uuid
 from pathlib import Path
 
 # Root of the BlenderMCPServer package
 _ROOT = Path(__file__).parent.parent
+logger = logging.getLogger(__name__)
 
 
 async def impl_generate_scene(
@@ -27,6 +29,12 @@ async def impl_generate_scene(
         from agents.qa_agent import run_qa_agent
 
         output_path = f"/tmp/blender_vision_{uuid.uuid4().hex}.mp4"
+        logger.info(
+            "render_tools.generate_scene_reference_start duration=%.2f style=%s has_reference=%s",
+            duration,
+            style,
+            True,
+        )
         vision_result = await run_vision_agent(
             prompt=prompt,
             reference_image_url=reference_image_url,
@@ -40,6 +48,15 @@ async def impl_generate_scene(
 
         # QA refinement loop (max 3 iterations)
         scene_params = vision_result.get("scene_params", {})
+        logger.info(
+            "render_tools.scene_plan mode=%s camera=%s movement=%s material=%s layers=%s verify=%s",
+            scene_params.get("blender_reference_mode", 2),
+            scene_params.get("camera_angle", "front"),
+            scene_params.get("movement_style", "slow_push"),
+            scene_params.get("material_style", "mixed"),
+            scene_params.get("scene_layers", []),
+            scene_params.get("verification_focus", []),
+        )
         if scene_params and os.path.exists(vision_result["output_path"]):
             # Download reference image for local QA comparison
             ref_local = vision_result.get("reference_image_path") or ""
@@ -63,15 +80,38 @@ async def impl_generate_scene(
                         "camera_angle": scene_params.get("camera_angle", "front"),
                         "mood": scene_params.get("mood", "cinematic"),
                         "key_objects": scene_params.get("key_objects", []),
+                        "composition_focus": scene_params.get("composition_focus", "centered"),
+                        "movement_style": scene_params.get("movement_style", "slow_push"),
+                        "material_style": scene_params.get("material_style", "mixed"),
+                        "scene_layers": scene_params.get("scene_layers", []),
+                        "verification_focus": scene_params.get("verification_focus", []),
+                        "notes": scene_params.get("notes", ""),
                         "prompt": prompt,
                     },
-                    prompt_context=prompt,
+                    prompt_context=(
+                        f"{prompt}\n"
+                        f"Verification focus: {', '.join(scene_params.get('verification_focus', [])) or 'preserve brand silhouette, hero subject, and palette'}.\n"
+                        f"Scene layers: {', '.join(scene_params.get('scene_layers', [])) or 'foreground, subject, support, background'}.\n"
+                        f"Planner notes: {scene_params.get('notes', '')}"
+                    ).strip(),
                     max_iterations=3,
+                )
+                logger.info(
+                    "render_tools.qa_result approved=%s best_score=%.3f iterations=%s error=%s",
+                    qa_result.get("approved", False),
+                    float(qa_result.get("best_score", 0.0)),
+                    qa_result.get("iterations", 0),
+                    qa_result.get("error", ""),
                 )
                 final_path = qa_result.get("best_video_path", vision_result["output_path"])
             else:
+                logger.warning("render_tools.qa_skipped missing_local_reference output=%s", vision_result["output_path"])
                 final_path = vision_result["output_path"]
         else:
+            logger.warning("render_tools.qa_skipped missing_scene_params_or_output has_params=%s output_exists=%s",
+                bool(scene_params),
+                os.path.exists(vision_result.get("output_path", "")),
+            )
             final_path = vision_result.get("output_path", output_path)
 
         video_url = upload_render(final_path, prefix="scenes")
@@ -93,6 +133,11 @@ async def impl_generate_scene(
 
     script_path = _ROOT / "blender_scripts" / "base_scene.py"
     output_path = f"/tmp/blender_{uuid.uuid4().hex}.mp4"
+    logger.info(
+        "render_tools.generate_scene_plain_start duration=%.2f style=%s",
+        duration,
+        style,
+    )
 
     result = await run_blender_script_with_retry(
         script_content=script_path.read_text(),

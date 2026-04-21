@@ -14,14 +14,16 @@ It can be used standalone or called from the Director after blender_generate_sce
 """
 from __future__ import annotations
 
-import json
+import logging
 import os
 import subprocess
 import tempfile
-from pathlib import Path
 from typing import TypedDict
 
 from langgraph.graph import END, StateGraph
+
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -83,6 +85,27 @@ def _extract_frame(video_path: str, timestamp_frac: float = 0.5) -> str:
     return frame_path
 
 
+def _merge_corrections(comparisons: list[dict]) -> dict:
+    """Merge non-empty correction hints across multiple frame comparisons."""
+    merged: dict[str, str] = {}
+    correction_keys = (
+        "lighting_correction",
+        "color_correction",
+        "composition_correction",
+        "object_correction",
+    )
+    for key in correction_keys:
+        values: list[str] = []
+        for comparison in comparisons:
+            corrections = comparison.get("corrections", {}) or {}
+            value = corrections.get(key)
+            if isinstance(value, str) and value.strip():
+                values.append(value.strip())
+        if values:
+            merged[key] = " | ".join(dict.fromkeys(values))
+    return merged
+
+
 # ---------------------------------------------------------------------------
 # Nodes
 # ---------------------------------------------------------------------------
@@ -92,28 +115,53 @@ async def _evaluate_render_node(state: QAState) -> QAState:
     from tools.vision_tools import compare_render_to_reference
 
     video = state.get("current_video_path") or state["render_video_path"]
+    frame_paths: list[str] = []
+    comparisons: list[dict] = []
 
     try:
-        frame_path = _extract_frame(video)
+        for timestamp_frac in (0.25, 0.5, 0.75):
+            frame_paths.append(_extract_frame(video, timestamp_frac=timestamp_frac))
     except Exception as e:
         return {**state, "error": f"Frame extraction failed: {e}"}
 
     try:
-        comparison = compare_render_to_reference(
-            render_path=frame_path,
-            reference_path_or_url=state["reference_image_path"],
-            prompt_context=state.get("prompt_context", ""),
-        )
+        for frame_path in frame_paths:
+            comparisons.append(compare_render_to_reference(
+                render_path=frame_path,
+                reference_path_or_url=state["reference_image_path"],
+                prompt_context=state.get("prompt_context", ""),
+            ))
     except Exception as e:
         return {**state, "error": f"Vision comparison failed: {e}"}
     finally:
-        try:
-            os.unlink(frame_path)
-        except OSError:
-            pass
+        for frame_path in frame_paths:
+            try:
+                os.unlink(frame_path)
+            except OSError:
+                pass
 
-    score = float(comparison.get("match_score", 0.5))
-    approved = bool(comparison.get("approved", score >= 0.70))
+    if not comparisons:
+        return {**state, "error": "Vision comparison returned no frame analyses"}
+
+    scores = [float(comparison.get("match_score", 0.5)) for comparison in comparisons]
+    score = sum(scores) / len(scores)
+    approved = score >= 0.70 and min(scores) >= 0.58
+    merged_corrections = _merge_corrections(comparisons)
+    notes = " | ".join(
+        comparison.get("notes", "").strip()
+        for comparison in comparisons
+        if isinstance(comparison.get("notes"), str) and comparison.get("notes", "").strip()
+    )
+
+    logger.info(
+        "qa_agent.evaluate iteration=%s scores=%s avg=%.3f min=%.3f approved=%s corrections=%s",
+        state.get("iteration", 0),
+        [round(value, 3) for value in scores],
+        score,
+        min(scores),
+        approved,
+        sorted(merged_corrections.keys()),
+    )
 
     # Track best result
     best_score = state.get("best_score", 0.0)
@@ -127,9 +175,13 @@ async def _evaluate_render_node(state: QAState) -> QAState:
         "approved": approved,
         "best_score": best_score,
         "best_video_path": best_video,
-        "corrections": comparison.get("corrections", {}),
+        "corrections": merged_corrections,
         "current_video_path": video,
         "error": "",
+        "prompt_context": (
+            f"{state.get('prompt_context', '')}\nQA notes: {notes}".strip()
+            if notes else state.get("prompt_context", "")
+        ),
     }
 
 
@@ -153,6 +205,13 @@ async def _re_render_node(state: QAState) -> QAState:
         )
     except RuntimeError as e:
         return {**state, "iteration": iteration, "error": f"Re-render failed: {e}"}
+
+    logger.info(
+        "qa_agent.rerender_complete iteration=%s output=%s correction_keys=%s",
+        iteration,
+        result.get("output_path", output_mp4),
+        sorted((state.get("corrections") or {}).keys()),
+    )
 
     return {
         **state,

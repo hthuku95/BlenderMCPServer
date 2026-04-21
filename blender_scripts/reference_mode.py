@@ -55,6 +55,12 @@ LIGHTING       = args.get("lighting_type", "studio")
 CAM_ANGLE      = args.get("camera_angle", "front")
 MOOD           = args.get("mood", "cinematic")
 KEY_OBJECTS    = args.get("key_objects", [])
+COMP_FOCUS     = args.get("composition_focus", "centered")
+MOVE_STYLE     = args.get("movement_style", "slow_push")
+MATERIAL_STYLE = args.get("material_style", "mixed")
+SCENE_LAYERS   = args.get("scene_layers", [])
+VERIFY_FOCUS   = args.get("verification_focus", [])
+NOTES          = args.get("notes", "")
 CORRECTIONS    = args.get("corrections", {})
 PROMPT         = args.get("prompt", "")
 TOTAL_FRAMES   = int(DURATION * FPS)
@@ -126,6 +132,22 @@ loc, rot = CAM_PRESETS.get(CAM_ANGLE, CAM_PRESETS["front"])
 cam_obj.location = loc
 cam_obj.rotation_euler = rot
 
+focus_offsets = {
+    "centered": 0.0,
+    "left_weighted": -2.0,
+    "right_weighted": 2.0,
+    "layered_depth": 0.0,
+}
+cam_target_x = focus_offsets.get(COMP_FOCUS, 0.0)
+
+track_empty = bpy.data.objects.new("CameraTarget", None)
+track_empty.location = (cam_target_x, 0, 0.5)
+scene.collection.objects.link(track_empty)
+track = cam_obj.constraints.new(type="TRACK_TO")
+track.target = track_empty
+track.track_axis = "TRACK_NEGATIVE_Z"
+track.up_axis = "UP_Y"
+
 # Mode 2: set reference as camera background image
 if MODE == 2 and REF_IMG and os.path.exists(REF_IMG):
     cam_data.show_background_images = True
@@ -182,29 +204,72 @@ def make_material(name: str, color: tuple, roughness: float = 0.4):
     if bsdf:
         bsdf.inputs["Base Color"].default_value = color
         bsdf.inputs["Roughness"].default_value = roughness
+        if MATERIAL_STYLE == "glossy":
+            bsdf.inputs["Roughness"].default_value = 0.18
+            bsdf.inputs["Specular IOR Level"].default_value = 0.7
+        elif MATERIAL_STYLE == "matte":
+            bsdf.inputs["Roughness"].default_value = 0.72
+        elif MATERIAL_STYLE == "glass":
+            bsdf.inputs["Transmission Weight"].default_value = 0.78
+            bsdf.inputs["Roughness"].default_value = 0.08
     return mat
+
+# Ground plane gives the scene more depth and keeps product/demo renders from floating.
+floor_size = 26 if COMP_FOCUS == "layered_depth" else 18
+bpy.ops.mesh.primitive_plane_add(size=floor_size, location=(0, 0, -1.2))
+floor = bpy.context.active_object
+floor_mat = make_material("FloorMat", hex_to_linear(DOM_COLORS[min(1, len(DOM_COLORS) - 1)]), roughness=0.85)
+floor.data.materials.append(floor_mat)
 
 # Place simple proxy objects for key_objects (sphere / cube / torus)
 SHAPES = ["sphere", "cube", "torus", "plane", "cylinder"]
-for i, obj_name in enumerate(KEY_OBJECTS[:5]):
+combined_objects = list(KEY_OBJECTS[:5])
+for layer in SCENE_LAYERS[:4]:
+    if layer and layer not in combined_objects:
+        combined_objects.append(layer)
+
+for i, obj_name in enumerate(combined_objects[:6]):
     col = hex_to_linear(DOM_COLORS[i % len(DOM_COLORS)]) if DOM_COLORS else (0.5, 0.5, 0.5, 1.0)
-    x_pos = (i - len(KEY_OBJECTS) // 2) * 3.0
+    x_pos = (i - len(combined_objects) // 2) * 2.8
+    y_pos = 0.0
+    z_pos = 0.0
+
+    if COMP_FOCUS == "left_weighted":
+        x_pos -= 1.6
+    elif COMP_FOCUS == "right_weighted":
+        x_pos += 1.6
+    elif COMP_FOCUS == "layered_depth":
+        y_pos = -2.4 + (i * 1.15)
+        z_pos = 0.18 * i
+
     shape = SHAPES[i % len(SHAPES)]
 
     if shape == "sphere":
-        bpy.ops.mesh.primitive_uv_sphere_add(radius=1.0, location=(x_pos, 0, 0))
+        bpy.ops.mesh.primitive_uv_sphere_add(radius=1.0, location=(x_pos, y_pos, z_pos))
     elif shape == "cube":
-        bpy.ops.mesh.primitive_cube_add(size=1.5, location=(x_pos, 0, 0))
+        bpy.ops.mesh.primitive_cube_add(size=1.5, location=(x_pos, y_pos, z_pos))
     elif shape == "torus":
-        bpy.ops.mesh.primitive_torus_add(location=(x_pos, 0, 0))
+        bpy.ops.mesh.primitive_torus_add(location=(x_pos, y_pos, z_pos))
     elif shape == "plane":
-        bpy.ops.mesh.primitive_plane_add(size=2.0, location=(x_pos, 0, 0))
+        bpy.ops.mesh.primitive_plane_add(size=2.0, location=(x_pos, y_pos, z_pos))
     else:
-        bpy.ops.mesh.primitive_cylinder_add(radius=0.8, depth=2.0, location=(x_pos, 0, 0))
+        bpy.ops.mesh.primitive_cylinder_add(radius=0.8, depth=2.0, location=(x_pos, y_pos, z_pos))
 
     obj = bpy.context.active_object
     mat = make_material(f"Mat_{obj_name}", col)
     obj.data.materials.append(mat)
+    if i == 0:
+        obj.scale = (1.25, 1.25, 1.25)
+        track_empty.location = (obj.location.x, obj.location.y, obj.location.z + 0.3)
+
+notes_lower = NOTES.lower()
+if "close" in notes_lower or "macro" in notes_lower:
+    cam_obj.location.y += 2.0
+    cam_obj.location.z += 0.3
+elif "wide" in notes_lower or "spacious" in notes_lower:
+    cam_obj.location.y -= 2.5
+elif "minimal" in notes_lower:
+    bg_node.inputs["Strength"].default_value = 0.65
 
 # Apply corrections from QA loop if present
 if CORRECTIONS.get("lighting_correction"):
@@ -216,6 +281,37 @@ if CORRECTIONS.get("lighting_correction"):
 if CORRECTIONS.get("color_correction"):
     # Shift dominant color by tinting background
     bg_node.inputs["Strength"].default_value = 1.2
+
+if CORRECTIONS.get("composition_correction"):
+    cam_obj.location.y = cam_obj.location.y - 1.5
+
+if CORRECTIONS.get("object_correction") and combined_objects:
+    track_empty.location.z += 0.4
+
+# Simple camera animation adds product-demo motion rather than a static proxy render.
+if MOVE_STYLE == "slow_push":
+    cam_obj.keyframe_insert(data_path="location", frame=1)
+    cam_obj.location.y += 2.0
+    cam_obj.location.z += 0.4
+    cam_obj.keyframe_insert(data_path="location", frame=TOTAL_FRAMES)
+elif MOVE_STYLE == "orbit":
+    cam_obj.keyframe_insert(data_path="location", frame=1)
+    cam_obj.location.x = loc[0] * -0.85
+    cam_obj.location.y = abs(loc[1]) * 0.8
+    cam_obj.keyframe_insert(data_path="location", frame=TOTAL_FRAMES)
+elif MOVE_STYLE == "parallax":
+    cam_obj.keyframe_insert(data_path="location", frame=1)
+    track_empty.keyframe_insert(data_path="location", frame=1)
+    cam_obj.location.x += 2.5
+    track_empty.location.x -= 1.1
+    cam_obj.keyframe_insert(data_path="location", frame=TOTAL_FRAMES)
+    track_empty.keyframe_insert(data_path="location", frame=TOTAL_FRAMES)
+
+for obj in scene.objects:
+    if obj.animation_data and obj.animation_data.action:
+        for fcurve in obj.animation_data.action.fcurves:
+            for key in fcurve.keyframe_points:
+                key.interpolation = "BEZIER"
 
 # Mode 1: add reference image as flat image plane in the scene
 if MODE == 1 and REF_IMG and os.path.exists(REF_IMG):
@@ -258,4 +354,13 @@ scene.cycles.use_denoising = True
 
 bpy.ops.render.render(animation=True)
 
-print(f"RESULT:{json.dumps({'output_path': OUTPUT_PATH, 'frames': TOTAL_FRAMES, 'fps': FPS, 'mode': MODE})}")
+print(f"RESULT:{json.dumps({
+    'output_path': OUTPUT_PATH,
+    'frames': TOTAL_FRAMES,
+    'fps': FPS,
+    'mode': MODE,
+    'composition_focus': COMP_FOCUS,
+    'movement_style': MOVE_STYLE,
+    'material_style': MATERIAL_STYLE,
+    'verification_focus': VERIFY_FOCUS,
+})}")

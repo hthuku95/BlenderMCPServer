@@ -67,16 +67,19 @@ async def _download_reference_node(state: VisionState) -> VisionState:
         # already a local path
         return {**state, "reference_image_path": url, "error": ""}
 
+    logger.info("vision_agent.reference_download_start url=%s", url)
     try:
         import httpx
-        resp = httpx.get(
-            url,
-            timeout=30,
+
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(30.0, connect=10.0),
             follow_redirects=True,
             headers=_DOWNLOAD_HEADERS,
-        )
-        resp.raise_for_status()
+        ) as client:
+            resp = await client.get(url)
+            resp.raise_for_status()
     except Exception as e:
+        logger.exception("vision_agent.reference_download_failed url=%s error=%s", url, e)
         return {**state, "error": f"Failed to download reference image: {e}"}
 
     suffix = ".jpg"
@@ -88,6 +91,14 @@ async def _download_reference_node(state: VisionState) -> VisionState:
     with tempfile.NamedTemporaryFile(suffix=suffix, delete=False, prefix="ref_img_") as f:
         f.write(resp.content)
         local_path = f.name
+
+    logger.info(
+        "vision_agent.reference_download_complete url=%s content_type=%s bytes=%s local_path=%s",
+        url,
+        resp.headers.get("content-type", ""),
+        len(resp.content),
+        local_path,
+    )
 
     return {**state, "reference_image_path": local_path, "error": ""}
 

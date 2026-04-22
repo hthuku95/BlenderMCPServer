@@ -16,6 +16,7 @@ Deploy on Render:
 """
 
 import json
+import logging
 import os
 
 import uvicorn
@@ -65,6 +66,7 @@ load_dotenv()
 
 MCP_API_KEY = os.getenv("MCP_API_KEY", "")
 PORT = int(os.getenv("PORT", "8000"))
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # MCP Server (for Claude Desktop / Cursor / other MCP clients)
@@ -1005,6 +1007,13 @@ async def rest_call_tool(request: Request) -> JSONResponse:
 
     tool_name = body.get("tool", "")
     args = body.get("args", {})
+    logger.info(
+        "server.call_tool_received tool=%s arg_keys=%s has_reference=%s client=%s",
+        tool_name,
+        sorted(args.keys()) if isinstance(args, dict) else [],
+        bool(isinstance(args, dict) and args.get("reference_image_url")),
+        request.client.host if request.client else "unknown",
+    )
 
     if tool_name not in TOOL_HANDLERS:
         return JSONResponse(
@@ -1014,8 +1023,10 @@ async def rest_call_tool(request: Request) -> JSONResponse:
 
     try:
         result = await TOOL_HANDLERS[tool_name](**args)
+        logger.info("server.call_tool_completed tool=%s", tool_name)
         return JSONResponse({"result": result})
     except Exception as exc:
+        logger.exception("server.call_tool_failed tool=%s error=%s", tool_name, exc)
         return JSONResponse({"error": str(exc)}, status_code=500)
 
 
@@ -1064,6 +1075,13 @@ async def rest_submit_job(request: Request) -> JSONResponse:
 
     tool_name = body.get("tool", "")
     args = body.get("args", {})
+    logger.info(
+        "server.submit_job_received tool=%s arg_keys=%s has_reference=%s client=%s",
+        tool_name,
+        sorted(args.keys()) if isinstance(args, dict) else [],
+        bool(isinstance(args, dict) and args.get("reference_image_url")),
+        request.client.host if request.client else "unknown",
+    )
 
     if tool_name not in TOOL_HANDLERS:
         return JSONResponse(
@@ -1073,8 +1091,10 @@ async def rest_submit_job(request: Request) -> JSONResponse:
 
     try:
         job_id = await _job_queue.submit(tool_name, args)
+        logger.info("server.submit_job_enqueued tool=%s job_id=%s", tool_name, job_id)
         return JSONResponse({"job_id": job_id, "state": "pending"}, status_code=202)
     except Exception as exc:
+        logger.exception("server.submit_job_failed tool=%s error=%s", tool_name, exc)
         return JSONResponse({"error": str(exc)}, status_code=500)
 
 

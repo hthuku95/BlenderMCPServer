@@ -21,7 +21,7 @@ async def impl_generate_scene(
     style: str = "cinematic",
     reference_image_url: str = "",
 ) -> dict:
-    from tools.storage import upload_render
+    from tools.storage import host_remote_asset, upload_render
 
     # If a reference image is provided, use the Vision + QA pipeline (Phase 3)
     if reference_image_url:
@@ -29,6 +29,21 @@ async def impl_generate_scene(
         from agents.qa_agent import run_qa_agent
 
         output_path = f"/tmp/blender_vision_{uuid.uuid4().hex}.mp4"
+        normalized_reference_image_url = reference_image_url
+        if not os.path.exists(reference_image_url):
+            try:
+                normalized_reference_image_url = host_remote_asset(reference_image_url)
+                logger.info(
+                    "render_tools.reference_asset_hosted source=%s hosted=%s",
+                    reference_image_url,
+                    normalized_reference_image_url,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "render_tools.reference_asset_host_failed source=%s error=%s",
+                    reference_image_url,
+                    exc,
+                )
         logger.info(
             "render_tools.generate_scene_reference_start duration=%.2f style=%s has_reference=%s",
             duration,
@@ -37,7 +52,7 @@ async def impl_generate_scene(
         )
         vision_result = await run_vision_agent(
             prompt=prompt,
-            reference_image_url=reference_image_url,
+            reference_image_url=normalized_reference_image_url,
             duration=duration,
             style=style,
             output_path=output_path,

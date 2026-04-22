@@ -245,6 +245,7 @@ async def run_vision_agent(
     final = await _GRAPH.ainvoke(initial)
     return {
         "output_path": final.get("output_path", ""),
+        "reference_image_path": final.get("reference_image_path", ""),
         "scene_params": final.get("scene_params", {}),
         "error": final.get("error", ""),
     }

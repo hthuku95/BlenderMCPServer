@@ -803,6 +803,7 @@ async def impl_generate_network_graph(
 
 async def impl_generate_logo_reveal(
     text: str = "BRAND",
+    logo_text: str = "",
     tagline: str = "",
     style: str = "extrude_reveal",
     color: list | None = None,
@@ -814,11 +815,12 @@ async def impl_generate_logo_reveal(
 
     script_path = _ROOT / "blender_scripts" / "logo_reveal.py"
     output_path = f"/tmp/logo_{uuid.uuid4().hex}.mp4"
+    resolved_text = (text or "").strip() or (logo_text or "").strip() or "BRAND"
 
     result = await run_blender_script_with_retry(
         script_content=script_path.read_text(),
         args={
-            "text": text,
+            "text": resolved_text,
             "tagline": tagline,
             "style": style,
             "color": color or [0.1, 0.5, 1.0, 1.0],
@@ -836,7 +838,7 @@ async def impl_generate_logo_reveal(
     except OSError:
         pass
 
-    return {"video_url": video_url, "duration": duration, "text": text, "style": style}
+    return {"video_url": video_url, "duration": duration, "text": resolved_text, "style": style}
 
 
 # ---------------------------------------------------------------------------

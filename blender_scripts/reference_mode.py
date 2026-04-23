@@ -354,13 +354,14 @@ scene.cycles.use_denoising = True
 
 bpy.ops.render.render(animation=True)
 
-print(f"RESULT:{json.dumps({
-    'output_path': OUTPUT_PATH,
-    'frames': TOTAL_FRAMES,
-    'fps': FPS,
-    'mode': MODE,
-    'composition_focus': COMP_FOCUS,
-    'movement_style': MOVE_STYLE,
-    'material_style': MATERIAL_STYLE,
-    'verification_focus': VERIFY_FOCUS,
-})}")
+result = {
+    "output_path": OUTPUT_PATH,
+    "frames": TOTAL_FRAMES,
+    "fps": FPS,
+    "mode": MODE,
+    "composition_focus": COMP_FOCUS,
+    "movement_style": MOVE_STYLE,
+    "material_style": MATERIAL_STYLE,
+    "verification_focus": VERIFY_FOCUS,
+}
+print("RESULT:" + json.dumps(result))

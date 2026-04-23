@@ -46,8 +46,8 @@ args_json = argv[argv.index("--") + 1] if "--" in argv else "{}"
 args = json.loads(args_json)
 
 OUTPUT_PATH    = args.get("output_path", "/tmp/ref_render.mp4")
-DURATION       = min(float(args.get("duration", 10.0)), 12.0)
-FPS            = min(int(args.get("fps", 24)), 24)
+DURATION       = min(float(args.get("duration", 10.0)), 6.0)
+FPS            = min(int(args.get("fps", 12)), 12)
 REF_IMG        = args.get("reference_image_path", "")
 MODE           = int(args.get("mode", 2))
 DOM_COLORS     = args.get("dominant_colors", ["#1a1a2e", "#16213e", "#0f3460"])
@@ -344,8 +344,8 @@ try:
     render.engine = "BLENDER_EEVEE_NEXT"
 except TypeError:
     render.engine = "BLENDER_EEVEE"
-render.resolution_x = 1280
-render.resolution_y = 720
+render.resolution_x = 960
+render.resolution_y = 540
 render.image_settings.file_format = "FFMPEG"
 render.ffmpeg.format = "MPEG4"
 render.ffmpeg.codec = "H264"
@@ -353,7 +353,7 @@ render.ffmpeg.constant_rate_factor = "HIGH"
 render.filepath = OUTPUT_PATH
 
 if hasattr(scene, "eevee"):
-    scene.eevee.taa_render_samples = 32
+    scene.eevee.taa_render_samples = 8
 
 bpy.ops.render.render(animation=True)
 

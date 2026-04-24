@@ -18,9 +18,10 @@ import logging
 import os
 import subprocess
 import tempfile
-from typing import TypedDict
+from typing import Any, TypedDict
 
 from langgraph.graph import END, StateGraph
+from tools.workflow_runtime import get_checkpointer, workflow_config
 
 
 logger = logging.getLogger(__name__)
@@ -237,7 +238,7 @@ def _should_continue(state: QAState) -> str:
 # Graph
 # ---------------------------------------------------------------------------
 
-def build_qa_graph() -> StateGraph:
+def build_qa_graph(checkpointer: Any) -> StateGraph:
     g = StateGraph(QAState)
     g.add_node("evaluate_render", _evaluate_render_node)
     g.add_node("re_render", _re_render_node)
@@ -250,10 +251,10 @@ def build_qa_graph() -> StateGraph:
     )
     g.add_edge("re_render", "evaluate_render")
 
-    return g.compile()
+    return g.compile(checkpointer=checkpointer)
 
 
-_GRAPH = None
+_GRAPHS: dict[int, Any] = {}
 
 
 async def run_qa_agent(
@@ -263,6 +264,7 @@ async def run_qa_agent(
     blender_args: dict,
     prompt_context: str = "",
     max_iterations: int = 3,
+    thread_id: str = "",
 ) -> dict:
     """
     Run the QA refinement loop on a rendered video.
@@ -276,9 +278,11 @@ async def run_qa_agent(
           "error": str
         }
     """
-    global _GRAPH
-    if _GRAPH is None:
-        _GRAPH = build_qa_graph()
+    checkpointer = await get_checkpointer()
+    graph = _GRAPHS.get(id(checkpointer))
+    if graph is None:
+        graph = build_qa_graph(checkpointer)
+        _GRAPHS[id(checkpointer)] = graph
 
     initial: QAState = {
         "render_video_path": render_video_path,
@@ -296,7 +300,10 @@ async def run_qa_agent(
         "error": "",
     }
 
-    final = await _GRAPH.ainvoke(initial)
+    final = await graph.ainvoke(
+        initial,
+        config=workflow_config(thread_id or f"qa-{os.getpid()}", "qa_agent"),
+    )
     return {
         "approved": final.get("approved", False),
         "best_video_path": final.get("best_video_path", render_video_path),

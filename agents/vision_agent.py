@@ -18,9 +18,10 @@ import logging
 import os
 import tempfile
 from pathlib import Path
-from typing import TypedDict
+from typing import Any, TypedDict
 
 from langgraph.graph import END, StateGraph
+from tools.workflow_runtime import get_checkpointer, workflow_config
 
 
 logger = logging.getLogger(__name__)
@@ -192,7 +193,7 @@ async def _render_with_reference_node(state: VisionState) -> VisionState:
 # Graph
 # ---------------------------------------------------------------------------
 
-def build_vision_graph() -> StateGraph:
+def build_vision_graph(checkpointer: Any) -> StateGraph:
     g = StateGraph(VisionState)
     g.add_node("download_reference", _download_reference_node)
     g.add_node("analyse_reference", _analyse_reference_node)
@@ -203,10 +204,10 @@ def build_vision_graph() -> StateGraph:
     g.add_edge("analyse_reference", "render_with_reference")
     g.add_edge("render_with_reference", END)
 
-    return g.compile()
+    return g.compile(checkpointer=checkpointer)
 
 
-_GRAPH = None
+_GRAPHS: dict[int, Any] = {}
 
 
 async def run_vision_agent(
@@ -215,6 +216,7 @@ async def run_vision_agent(
     duration: float = 10.0,
     style: str = "cinematic",
     output_path: str | None = None,
+    thread_id: str = "",
 ) -> dict:
     """
     Run the vision-guided Blender render pipeline.
@@ -226,9 +228,11 @@ async def run_vision_agent(
           "error": str            # empty on success
         }
     """
-    global _GRAPH
-    if _GRAPH is None:
-        _GRAPH = build_vision_graph()
+    checkpointer = await get_checkpointer()
+    graph = _GRAPHS.get(id(checkpointer))
+    if graph is None:
+        graph = build_vision_graph(checkpointer)
+        _GRAPHS[id(checkpointer)] = graph
 
     initial: VisionState = {
         "prompt": prompt,
@@ -242,7 +246,10 @@ async def run_vision_agent(
         "error": "",
     }
 
-    final = await _GRAPH.ainvoke(initial)
+    final = await graph.ainvoke(
+        initial,
+        config=workflow_config(thread_id or f"vision-{os.getpid()}", "vision_agent"),
+    )
     return {
         "output_path": final.get("output_path", ""),
         "reference_image_path": final.get("reference_image_path", ""),

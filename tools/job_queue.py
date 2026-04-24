@@ -38,6 +38,7 @@ class State(str, Enum):
 class JobStatus:
     job_id:    str
     tool:      str
+    workflow_thread_id: str = ""
     state:     State          = State.PENDING
     result:    dict | None    = None
     error:     str            = ""
@@ -49,6 +50,7 @@ class JobStatus:
         return {
             "job_id":      self.job_id,
             "tool":        self.tool,
+            "workflow_thread_id": self.workflow_thread_id,
             "state":       self.state.value,
             "result":      self.result,
             "error":       self.error,
@@ -91,12 +93,15 @@ class JobQueue:
             await self._start_workers()
 
         job_id = str(uuid.uuid4())
-        status = JobStatus(job_id=job_id, tool=tool_name)
-        status.result = args  # store args temporarily (overwritten on completion)
+        normalized_args = dict(args or {})
+        workflow_thread_id = str(normalized_args.get("workflow_thread_id") or job_id)
+        normalized_args.setdefault("workflow_thread_id", workflow_thread_id)
+        status = JobStatus(job_id=job_id, tool=tool_name, workflow_thread_id=workflow_thread_id)
+        status.result = normalized_args  # store args temporarily (overwritten on completion)
         self._jobs[job_id] = status
 
         # Store args alongside job so worker can retrieve them
-        self._jobs[job_id]._args = args  # type: ignore[attr-defined]
+        self._jobs[job_id]._args = normalized_args  # type: ignore[attr-defined]
         await self._pending.put(job_id)
         return job_id
 

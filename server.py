@@ -1092,7 +1092,10 @@ async def rest_submit_job(request: Request) -> JSONResponse:
     try:
         job_id = await _job_queue.submit(tool_name, args)
         logger.info("server.submit_job_enqueued tool=%s job_id=%s", tool_name, job_id)
-        return JSONResponse({"job_id": job_id, "state": "pending"}, status_code=202)
+        return JSONResponse(
+            {"job_id": job_id, "workflow_thread_id": job_id, "state": "pending"},
+            status_code=202,
+        )
     except Exception as exc:
         logger.exception("server.submit_job_failed tool=%s error=%s", tool_name, exc)
         return JSONResponse({"error": str(exc)}, status_code=500)

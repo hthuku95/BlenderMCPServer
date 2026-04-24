@@ -20,159 +20,17 @@ async def impl_generate_scene(
     duration: float = 10.0,
     style: str = "cinematic",
     reference_image_url: str = "",
+    workflow_thread_id: str = "",
 ) -> dict:
-    from tools.storage import host_remote_asset, upload_render
+    from agents.scene_workflow import run_scene_workflow
 
-    # If a reference image is provided, use the Vision + QA pipeline (Phase 3)
-    if reference_image_url:
-        from agents.vision_agent import run_vision_agent
-        from agents.qa_agent import run_qa_agent
-
-        output_path = f"/tmp/blender_vision_{uuid.uuid4().hex}.mp4"
-        normalized_reference_image_url = reference_image_url
-        if not os.path.exists(reference_image_url):
-            try:
-                normalized_reference_image_url = host_remote_asset(reference_image_url)
-                logger.info(
-                    "render_tools.reference_asset_hosted source=%s hosted=%s",
-                    reference_image_url,
-                    normalized_reference_image_url,
-                )
-            except Exception as exc:
-                logger.warning(
-                    "render_tools.reference_asset_host_failed source=%s error=%s",
-                    reference_image_url,
-                    exc,
-                )
-        logger.info(
-            "render_tools.generate_scene_reference_start duration=%.2f style=%s has_reference=%s",
-            duration,
-            style,
-            True,
-        )
-        vision_result = await run_vision_agent(
-            prompt=prompt,
-            reference_image_url=normalized_reference_image_url,
-            duration=duration,
-            style=style,
-            output_path=output_path,
-        )
-
-        if vision_result.get("error"):
-            raise RuntimeError(vision_result["error"])
-
-        # QA refinement loop (max 3 iterations)
-        scene_params = vision_result.get("scene_params", {})
-        logger.info(
-            "render_tools.scene_plan mode=%s camera=%s movement=%s material=%s layers=%s verify=%s",
-            scene_params.get("blender_reference_mode", 2),
-            scene_params.get("camera_angle", "front"),
-            scene_params.get("movement_style", "slow_push"),
-            scene_params.get("material_style", "mixed"),
-            scene_params.get("scene_layers", []),
-            scene_params.get("verification_focus", []),
-        )
-        if scene_params and os.path.exists(vision_result["output_path"]):
-            # Download reference image for local QA comparison
-            ref_local = vision_result.get("reference_image_path") or ""
-            if not ref_local:
-                # Try to get local path from vision agent (already downloaded)
-                ref_local = output_path.replace(".mp4", "_ref.jpg")
-
-            if os.path.exists(ref_local):
-                qa_result = await run_qa_agent(
-                    render_video_path=vision_result["output_path"],
-                    reference_image_path=ref_local,
-                    blender_script_path=str(_ROOT / "blender_scripts" / "reference_mode.py"),
-                    blender_args={
-                        "output_path": output_path,
-                        "duration": duration,
-                        "fps": 60,
-                        "reference_image_path": ref_local,
-                        "mode": scene_params.get("blender_reference_mode", 2),
-                        "dominant_colors": scene_params.get("dominant_colors", []),
-                        "lighting_type": scene_params.get("lighting_type", "studio"),
-                        "camera_angle": scene_params.get("camera_angle", "front"),
-                        "mood": scene_params.get("mood", "cinematic"),
-                        "key_objects": scene_params.get("key_objects", []),
-                        "composition_focus": scene_params.get("composition_focus", "centered"),
-                        "movement_style": scene_params.get("movement_style", "slow_push"),
-                        "material_style": scene_params.get("material_style", "mixed"),
-                        "scene_layers": scene_params.get("scene_layers", []),
-                        "verification_focus": scene_params.get("verification_focus", []),
-                        "notes": scene_params.get("notes", ""),
-                        "prompt": prompt,
-                    },
-                    prompt_context=(
-                        f"{prompt}\n"
-                        f"Verification focus: {', '.join(scene_params.get('verification_focus', [])) or 'preserve brand silhouette, hero subject, and palette'}.\n"
-                        f"Scene layers: {', '.join(scene_params.get('scene_layers', [])) or 'foreground, subject, support, background'}.\n"
-                        f"Planner notes: {scene_params.get('notes', '')}"
-                    ).strip(),
-                    max_iterations=3,
-                )
-                logger.info(
-                    "render_tools.qa_result approved=%s best_score=%.3f iterations=%s error=%s",
-                    qa_result.get("approved", False),
-                    float(qa_result.get("best_score", 0.0)),
-                    qa_result.get("iterations", 0),
-                    qa_result.get("error", ""),
-                )
-                final_path = qa_result.get("best_video_path", vision_result["output_path"])
-            else:
-                logger.warning("render_tools.qa_skipped missing_local_reference output=%s", vision_result["output_path"])
-                final_path = vision_result["output_path"]
-        else:
-            logger.warning("render_tools.qa_skipped missing_scene_params_or_output has_params=%s output_exists=%s",
-                bool(scene_params),
-                os.path.exists(vision_result.get("output_path", "")),
-            )
-            final_path = vision_result.get("output_path", output_path)
-
-        video_url = upload_render(final_path, prefix="scenes")
-        try:
-            os.unlink(final_path)
-        except OSError:
-            pass
-
-        return {
-            "video_url": video_url,
-            "duration": duration,
-            "resolution": "1920x1080",
-            "frames": int(duration * 60),
-            "reference_mode": scene_params.get("blender_reference_mode", 2),
-        }
-
-    # No reference image — standard Blender scene
-    from tools.blender_runner import run_blender_script_with_retry
-
-    script_path = _ROOT / "blender_scripts" / "base_scene.py"
-    output_path = f"/tmp/blender_{uuid.uuid4().hex}.mp4"
-    logger.info(
-        "render_tools.generate_scene_plain_start duration=%.2f style=%s",
-        duration,
-        style,
+    return await run_scene_workflow(
+        prompt=prompt,
+        duration=duration,
+        style=style,
+        reference_image_url=reference_image_url,
+        workflow_thread_id=workflow_thread_id,
     )
-
-    result = await run_blender_script_with_retry(
-        script_content=script_path.read_text(),
-        args={"prompt": prompt, "duration": duration, "style": style, "output_path": output_path},
-        max_attempts=3,
-        timeout=600,
-    )
-
-    video_url = upload_render(output_path, prefix="scenes")
-    try:
-        os.unlink(output_path)
-    except OSError:
-        pass
-
-    return {
-        "video_url": video_url,
-        "duration": result.get("duration", duration),
-        "resolution": result.get("resolution", "1920x1080"),
-        "frames": result.get("frames", int(duration * 24)),
-    }
 
 
 async def impl_generate_thumbnail(

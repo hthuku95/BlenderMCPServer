@@ -141,11 +141,11 @@ class JobQueue:
                 continue
 
             # Hard cap per-job: prevents orphaned jobs from monopolising the
-            # worker and starving subsequent renders. Rust polls for 900s, so
-            # 720s gives 180s margin for the result to be seen before Rust
-            # times out.  Blender renders are also capped at 600s each, so
-            # 720s accommodates one full render attempt plus overhead.
-            _JOB_TIMEOUT = int(__import__("os").getenv("JOB_TIMEOUT_SECS", "720"))
+            # worker and starving subsequent renders. The default budget is
+            # intentionally longer for website-to-video and reference-driven
+            # jobs, which can spend several minutes across analysis, render,
+            # QA, and upload before the result is ready to poll.
+            _JOB_TIMEOUT = int(__import__("os").getenv("JOB_TIMEOUT_SECS", "1500"))
             try:
                 result = await asyncio.wait_for(handler(**args), timeout=_JOB_TIMEOUT)
                 status.state = State.COMPLETED

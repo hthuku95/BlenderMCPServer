@@ -34,6 +34,7 @@ Usage:
 """
 from __future__ import annotations
 
+import asyncio
 import os
 from typing import Any
 
@@ -57,6 +58,7 @@ _configure_langsmith()
 # ---------------------------------------------------------------------------
 
 _GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+_GEMINI_FALLBACK_MODEL = os.getenv("GEMINI_FALLBACK_MODEL", "gemini-2.0-flash")
 _CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-opus-4-6")
 _PROVIDER     = os.getenv("LLM_PROVIDER", "auto").lower()  # "gemini" | "claude" | "auto"
 
@@ -164,6 +166,53 @@ def _resolve(override: str | None) -> str:
     return _resolved_provider()
 
 
+def _is_transient_gemini_error(exc: Exception) -> bool:
+    message = str(exc)
+    transient_markers = (
+        "503",
+        "UNAVAILABLE",
+        "RESOURCE_EXHAUSTED",
+        "429",
+        "temporarily unavailable",
+        "high demand",
+        "try again later",
+    )
+    return any(marker in message for marker in transient_markers)
+
+
+async def _generate_text_with_gemini_model(
+    *,
+    model: str,
+    prompt: str,
+    temperature: float,
+    max_tokens: int,
+) -> str:
+    from google import genai as google_genai  # new google-genai SDK
+
+    client = google_genai.Client(
+        api_key=os.getenv("VIDEO_GEMINI_API_KEY") or os.getenv("GEMINI_API_KEY")
+    )
+
+    response = client.models.generate_content(
+        model=model,
+        contents=prompt,
+        config=google_genai.types.GenerateContentConfig(
+            temperature=temperature,
+            max_output_tokens=max_tokens,
+        ),
+    )
+
+    try:
+        return response.text
+    except (ValueError, AttributeError):
+        try:
+            return response.candidates[0].content.parts[0].text
+        except (IndexError, AttributeError) as inner_err:
+            raise RuntimeError(
+                f"Gemini returned empty/blocked response: {inner_err}"
+            ) from inner_err
+
+
 # ---------------------------------------------------------------------------
 # Simple raw text generation (no tools)
 # ---------------------------------------------------------------------------
@@ -183,28 +232,28 @@ async def generate_text(
 
     if resolved == "gemini":
         try:
-            from google import genai as google_genai  # new google-genai SDK
-            client = google_genai.Client(api_key=os.getenv("VIDEO_GEMINI_API_KEY") or os.getenv("GEMINI_API_KEY"))
-            response = client.models.generate_content(
-                model=_GEMINI_MODEL,
-                contents=prompt,
-                config=google_genai.types.GenerateContentConfig(
-                    temperature=temperature,
-                    max_output_tokens=max_tokens,
-                ),
-            )
-            # response.text raises ValueError for multi-part or blocked responses
-            try:
-                text = response.text
-            except (ValueError, AttributeError):
-                # Try manual extraction from candidates
-                try:
-                    text = response.candidates[0].content.parts[0].text
-                except (IndexError, AttributeError) as inner_err:
-                    raise RuntimeError(
-                        f"Gemini returned empty/blocked response: {inner_err}"
-                    ) from inner_err
-            return text, "gemini"
+            gemini_errors: list[str] = []
+            gemini_models = [_GEMINI_MODEL]
+            if _GEMINI_FALLBACK_MODEL and _GEMINI_FALLBACK_MODEL not in gemini_models:
+                gemini_models.append(_GEMINI_FALLBACK_MODEL)
+
+            for model in gemini_models:
+                for attempt in range(1, 4):
+                    try:
+                        text = await _generate_text_with_gemini_model(
+                            model=model,
+                            prompt=prompt,
+                            temperature=temperature,
+                            max_tokens=max_tokens,
+                        )
+                        return text, "gemini"
+                    except Exception as gemini_err:
+                        gemini_errors.append(f"{model} attempt {attempt}: {gemini_err}")
+                        if attempt < 3 and _is_transient_gemini_error(gemini_err):
+                            await asyncio.sleep(min(6, 2 * attempt))
+                            continue
+                        break
+            raise RuntimeError("; ".join(gemini_errors))
         except Exception as gemini_err:
             # Only fall back to Claude when LLM_PROVIDER="auto" (not when explicitly "gemini")
             if _PROVIDER != "auto" or not _has_claude():

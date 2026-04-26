@@ -66,7 +66,7 @@ _PROVIDER     = os.getenv("LLM_PROVIDER", "auto").lower()  # "gemini" | "claude"
 # ---------------------------------------------------------------------------
 
 def _has_gemini() -> bool:
-    return bool(os.getenv("GEMINI_API_KEY"))
+    return bool(os.getenv("VIDEO_GEMINI_API_KEY") or os.getenv("GEMINI_API_KEY"))
 
 
 def _has_claude() -> bool:
@@ -127,7 +127,7 @@ def get_chat_model(
             from langchain_google_genai import ChatGoogleGenerativeAI  # type: ignore
             return ChatGoogleGenerativeAI(
                 model=_GEMINI_MODEL,
-                google_api_key=os.getenv("GEMINI_API_KEY"),
+                google_api_key=os.getenv("VIDEO_GEMINI_API_KEY") or os.getenv("GEMINI_API_KEY"),
                 temperature=temperature,
                 max_output_tokens=max_tokens,
             )
@@ -184,7 +184,7 @@ async def generate_text(
     if resolved == "gemini":
         try:
             from google import genai as google_genai  # new google-genai SDK
-            client = google_genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+            client = google_genai.Client(api_key=os.getenv("VIDEO_GEMINI_API_KEY") or os.getenv("GEMINI_API_KEY"))
             response = client.models.generate_content(
                 model=_GEMINI_MODEL,
                 contents=prompt,

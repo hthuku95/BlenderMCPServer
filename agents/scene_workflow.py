@@ -33,6 +33,9 @@ class SceneWorkflowState(TypedDict):
     duration: float
     style: str
     reference_image_url: str
+    include_narration: bool
+    narration_text: str
+    narration_speaker: str
     workflow_thread_id: str
     output_path: str
     reference_image_path: str
@@ -212,6 +215,32 @@ async def _upload_result_node(state: SceneWorkflowState) -> SceneWorkflowState:
     if state.get("reference_image_url"):
         result["reference_mode"] = state.get("scene_params", {}).get("blender_reference_mode", 2)
 
+    if state.get("include_narration"):
+        narration_text = (state.get("narration_text") or state["prompt"]).strip()
+        if narration_text:
+            try:
+                from tools.vibevoice import attach_narration_assets
+
+                narration_assets = await attach_narration_assets(
+                    video_path=final_path,
+                    narration_text=narration_text,
+                    speaker=state.get("narration_speaker") or "Emma",
+                    prefix="scenes",
+                    metadata={
+                        "workflow_thread_id": state["workflow_thread_id"],
+                        "tool": "blender_generate_scene",
+                        "style": state["style"],
+                    },
+                )
+                result.update(narration_assets)
+            except Exception as exc:
+                logger.warning(
+                    "scene_workflow.narration_failed thread_id=%s error=%s",
+                    state["workflow_thread_id"],
+                    exc,
+                )
+                result["narration_error"] = str(exc)
+
     logger.info(
         "scene_workflow.upload_complete thread_id=%s persistence=%s video_url=%s",
         state["workflow_thread_id"],
@@ -262,6 +291,9 @@ async def run_scene_workflow(
     duration: float = 10.0,
     style: str = "cinematic",
     reference_image_url: str = "",
+    include_narration: bool = False,
+    narration_text: str = "",
+    narration_speaker: str = "Emma",
     workflow_thread_id: str = "",
 ) -> dict:
     checkpointer = await get_checkpointer()
@@ -276,6 +308,9 @@ async def run_scene_workflow(
         "duration": duration,
         "style": style,
         "reference_image_url": reference_image_url,
+        "include_narration": include_narration,
+        "narration_text": narration_text,
+        "narration_speaker": narration_speaker,
         "workflow_thread_id": thread_id,
         "output_path": "",
         "reference_image_path": "",

@@ -19,14 +19,16 @@ Decision rule:
 from __future__ import annotations
 
 import asyncio
-import json
 import os
 import tempfile
+import uuid
 from pathlib import Path
 from typing import Literal, TypedDict
 
 from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 from langgraph.graph import END, StateGraph
+
+from tools.workflow_runtime import get_checkpointer, workflow_config
 
 # ---------------------------------------------------------------------------
 # State
@@ -45,6 +47,7 @@ class LatexState(TypedDict):
     eq_video_path: str           # Option B only
     scene_video_path: str        # Option B only
     output_path: str
+    workflow_thread_id: str
     error: str
 
 
@@ -261,7 +264,7 @@ def _route(state: LatexState) -> Literal["option_a", "option_b"]:
 # Graph
 # ---------------------------------------------------------------------------
 
-def build_latex_graph() -> StateGraph:
+def build_latex_graph(checkpointer) -> StateGraph:
     g = StateGraph(LatexState)
     g.add_node("classify", _classify_node)
     g.add_node("option_a", _option_a_node)
@@ -272,10 +275,10 @@ def build_latex_graph() -> StateGraph:
     g.add_edge("option_a", END)
     g.add_edge("option_b", END)
 
-    return g.compile()
+    return g.compile(checkpointer=checkpointer)
 
 
-_GRAPH = None
+_GRAPHS = {}
 
 
 async def run_latex_agent(
@@ -286,6 +289,7 @@ async def run_latex_agent(
     prompt: str = "",
     output_path: str | None = None,
     option: str = "auto",
+    workflow_thread_id: str = "",
 ) -> dict:
     """
     Execute the LaTeX rendering pipeline.
@@ -297,9 +301,13 @@ async def run_latex_agent(
           "error": str              # empty on success
         }
     """
-    global _GRAPH
-    if _GRAPH is None:
-        _GRAPH = build_latex_graph()
+    checkpointer = await get_checkpointer()
+    graph = _GRAPHS.get(id(checkpointer))
+    if graph is None:
+        graph = build_latex_graph(checkpointer)
+        _GRAPHS[id(checkpointer)] = graph
+
+    thread_id = workflow_thread_id.strip() or f"latex-{uuid.uuid4().hex}"
 
     initial: LatexState = {
         "latex_expression": latex_expression,
@@ -313,10 +321,11 @@ async def run_latex_agent(
         "eq_video_path": "",
         "scene_video_path": "",
         "output_path": output_path or "",
+        "workflow_thread_id": thread_id,
         "error": "",
     }
 
-    final = await _GRAPH.ainvoke(initial)
+    final = await graph.ainvoke(initial, config=workflow_config(thread_id, "latex_workflow"))
     return {
         "output_path": final.get("output_path", ""),
         "chosen_option": final.get("chosen_option", ""),

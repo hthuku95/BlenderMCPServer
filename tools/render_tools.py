@@ -20,6 +20,9 @@ async def impl_generate_scene(
     duration: float = 10.0,
     style: str = "cinematic",
     reference_image_url: str = "",
+    include_narration: bool = False,
+    narration_text: str = "",
+    narration_speaker: str = "Emma",
     workflow_thread_id: str = "",
 ) -> dict:
     from agents.scene_workflow import run_scene_workflow
@@ -29,6 +32,9 @@ async def impl_generate_scene(
         duration=duration,
         style=style,
         reference_image_url=reference_image_url,
+        include_narration=include_narration,
+        narration_text=narration_text,
+        narration_speaker=narration_speaker,
         workflow_thread_id=workflow_thread_id,
     )
 
@@ -284,6 +290,10 @@ async def impl_generate_animation(
     duration: float = 10.0,
     background_style: str = "dark",
     composite_over_scene: bool = True,
+    include_narration: bool = False,
+    narration_text: str = "",
+    narration_speaker: str = "Emma",
+    workflow_thread_id: str = "",
 ) -> dict:
     """
     Generate any Manim animation from a natural language description.
@@ -294,85 +304,18 @@ async def impl_generate_animation(
     If composite_over_scene=True, the Manim clip (transparent bg) is composited
     over a Blender 3D background scene for a polished final look.
     """
-    from tools.manim_codegen import generate_and_run_manim
-    from tools.storage import upload_render
+    from agents.manim_workflow import run_manim_workflow
 
-    output_tmp = f"/tmp/anim_{uuid.uuid4().hex}"
-
-    if composite_over_scene:
-        # Transparent Manim clip → composite over Blender background
-        manim_path = output_tmp + "_eq.mov"
-        final_path  = output_tmp + ".mp4"
-
-        manim_path = await generate_and_run_manim(
-            description=description,
-            duration=duration,
-            background=background_style,
-            output_path=manim_path,
-            transparent=True,
-            quality="m",
-        )
-
-        # Blender background scene
-        blender_path = output_tmp + "_bg.mp4"
-        from tools.blender_runner import run_blender_script
-        blender_script = str(_ROOT / "blender_scripts" / "base_scene.py")
-        try:
-            result = await run_blender_script(
-                script_path=blender_script,
-                args={
-                    "prompt": description[:200],
-                    "duration": duration,
-                    "style": "cinematic",
-                    "output_path": blender_path,
-                },
-                timeout=600,
-            )
-            blender_path = result.get("output_path", blender_path)
-        except RuntimeError:
-            composite_over_scene = False   # fall through to plain upload
-
-        if composite_over_scene:
-            from tools.compositor import composite_manim_over_blender
-            final_path = composite_manim_over_blender(
-                blender_video_path=blender_path,
-                equation_video_path=manim_path,
-                output_path=final_path,
-                eq_x_position=0.5,
-                eq_y_position=0.5,
-                eq_scale=1.0,
-                fps=60,
-            )
-            for p in (manim_path, blender_path):
-                try:
-                    os.unlink(p)
-                except OSError:
-                    pass
-        else:
-            final_path = manim_path
-    else:
-        final_path = output_tmp + ".mp4"
-        await generate_and_run_manim(
-            description=description,
-            duration=duration,
-            background=background_style,
-            output_path=final_path,
-            transparent=False,
-            quality="m",
-        )
-
-    video_url = upload_render(final_path, prefix="animations")
-    try:
-        os.unlink(final_path)
-    except OSError:
-        pass
-
-    return {
-        "video_url": video_url,
-        "duration": duration,
-        "description": description[:200],
-        "composited": composite_over_scene,
-    }
+    return await run_manim_workflow(
+        description=description,
+        duration=duration,
+        background_style=background_style,
+        composite_over_scene=composite_over_scene,
+        include_narration=include_narration,
+        narration_text=narration_text,
+        narration_speaker=narration_speaker,
+        workflow_thread_id=workflow_thread_id,
+    )
 
 
 async def impl_generate_chart(
@@ -384,6 +327,7 @@ async def impl_generate_chart(
     y_range: list | None = None,
     colors: list | None = None,
     composite_over_scene: bool = False,
+    workflow_thread_id: str = "",
 ) -> dict:
     """
     Generate a Manim data-visualisation clip.
@@ -392,9 +336,7 @@ async def impl_generate_chart(
     data:       list of numbers (or [x,y] pairs for scatter)
     labels:     list of strings for axis labels or legend entries
     """
-    import json as _json
-    from tools.manim_runner import run_manim_scene
-    from tools.storage import upload_render
+    from agents.manim_scene_workflow import run_manim_scene_workflow
 
     if data is None:
         data = [3, 7, 5, 9, 4, 6]
@@ -407,12 +349,10 @@ async def impl_generate_chart(
         colors = []
 
     scene_file = str(_ROOT / "manim_scripts" / "data_chart_scene.py")
-    output_path = f"/tmp/chart_{uuid.uuid4().hex}.mp4"
-
-    await run_manim_scene(
+    return await run_manim_scene_workflow(
         scene_file=scene_file,
         scene_class="DataChartScene",
-        args={
+        scene_args={
             "chart_type": chart_type,
             "title": title,
             "data": data,
@@ -421,24 +361,14 @@ async def impl_generate_chart(
             "y_range": y_range,
             "colors": colors,
         },
-        quality="m",
-        output_path=output_path,
-        transparent=False,
-        timeout=300,
+        prefix="charts",
+        duration=duration,
+        workflow_thread_id=workflow_thread_id,
+        metadata={
+            "chart_type": chart_type,
+            "title": title,
+        },
     )
-
-    video_url = upload_render(output_path, prefix="charts")
-    try:
-        os.unlink(output_path)
-    except OSError:
-        pass
-
-    return {
-        "video_url": video_url,
-        "duration": duration,
-        "chart_type": chart_type,
-        "title": title,
-    }
 
 
 async def impl_generate_latex(
@@ -447,6 +377,10 @@ async def impl_generate_latex(
     duration: float = 8.0,
     background_style: str = "dark",
     prompt: str = "",
+    include_narration: bool = False,
+    narration_text: str = "",
+    narration_speaker: str = "Emma",
+    workflow_thread_id: str = "",
 ) -> dict:
     """
     Phase 2 LaTeX pipeline — routes between Option A (SVG→Blender 3D) and
@@ -466,6 +400,7 @@ async def impl_generate_latex(
         prompt=prompt,
         output_path=output_path,
         option="auto",
+        workflow_thread_id=workflow_thread_id,
     )
 
     if result.get("error"):
@@ -473,18 +408,39 @@ async def impl_generate_latex(
 
     final_path = result.get("output_path", output_path)
     video_url = upload_render(final_path, prefix="latex")
-    try:
-        os.unlink(final_path)
-    except OSError:
-        pass
 
-    return {
+    response = {
         "video_url": video_url,
         "duration": duration,
         "latex_expression": latex_expression,
         "animation_type": animation_type,
         "pipeline": result.get("chosen_option", "A"),  # "A" or "B"
     }
+    if include_narration:
+        try:
+            from tools.vibevoice import attach_narration_assets
+
+            fallback_text = narration_text or prompt or f"Explain the expression {latex_expression}"
+            response.update(
+                await attach_narration_assets(
+                    video_path=final_path,
+                    narration_text=fallback_text.strip(),
+                    speaker=narration_speaker,
+                    prefix="latex",
+                    metadata={
+                        "tool": "blender_generate_latex",
+                        "animation_type": animation_type,
+                        "background_style": background_style,
+                    },
+                )
+            )
+        except Exception as exc:
+            response["narration_error"] = str(exc)
+    try:
+        os.unlink(final_path)
+    except OSError:
+        pass
+    return response
 
 
 # ---------------------------------------------------------------------------
@@ -497,29 +453,20 @@ async def impl_generate_flowchart(
     title: str = "Process Flowchart",
     duration: float = 12.0,
     style: str = "dark",
+    workflow_thread_id: str = "",
 ) -> dict:
-    from tools.manim_runner import run_manim_scene
-    from tools.storage import upload_render
+    from agents.manim_scene_workflow import run_manim_scene_workflow
 
     scene_file  = str(_ROOT / "manim_scripts" / "flowchart_scene.py")
-    output_path = f"/tmp/flowchart_{uuid.uuid4().hex}.mp4"
-
-    await run_manim_scene(
+    return await run_manim_scene_workflow(
         scene_file=scene_file,
         scene_class="FlowchartScene",
-        args={"nodes": nodes or [], "edges": edges or [], "title": title, "duration": duration, "style": style},
-        quality="m",
-        output_path=output_path,
-        timeout=300,
+        scene_args={"nodes": nodes or [], "edges": edges or [], "title": title, "duration": duration, "style": style},
+        prefix="flowcharts",
+        duration=duration,
+        workflow_thread_id=workflow_thread_id,
+        metadata={"title": title},
     )
-
-    video_url = upload_render(output_path, prefix="flowcharts")
-    try:
-        import os as _os; _os.unlink(output_path)
-    except OSError:
-        pass
-
-    return {"video_url": video_url, "duration": duration, "title": title}
 
 
 # ---------------------------------------------------------------------------
@@ -532,30 +479,21 @@ async def impl_generate_3d_math(
     function: str = "wave",
     duration: float = 12.0,
     color: str = "BLUE",
+    workflow_thread_id: str = "",
 ) -> dict:
-    from tools.manim_runner import run_manim_scene
-    from tools.storage import upload_render
+    from agents.manim_scene_workflow import run_manim_scene_workflow
 
     scene_file  = str(_ROOT / "manim_scripts" / "threed_math_scene.py")
-    output_path = f"/tmp/3dmath_{uuid.uuid4().hex}.mp4"
-
-    await run_manim_scene(
+    return await run_manim_scene_workflow(
         scene_file=scene_file,
         scene_class="ThreeDMathScene",
-        args={"scene_type": scene_type, "title": title, "function": function,
-              "duration": duration, "color": color},
-        quality="m",
-        output_path=output_path,
-        timeout=400,
+        scene_args={"scene_type": scene_type, "title": title, "function": function,
+                    "duration": duration, "color": color},
+        prefix="3d_math",
+        duration=duration,
+        workflow_thread_id=workflow_thread_id,
+        metadata={"scene_type": scene_type},
     )
-
-    video_url = upload_render(output_path, prefix="3d_math")
-    try:
-        import os as _os; _os.unlink(output_path)
-    except OSError:
-        pass
-
-    return {"video_url": video_url, "duration": duration, "scene_type": scene_type}
 
 
 # ---------------------------------------------------------------------------
@@ -570,31 +508,22 @@ async def impl_generate_code_animation(
     reveal_mode: str = "line_by_line",
     duration: float = 12.0,
     style: str = "monokai",
+    workflow_thread_id: str = "",
 ) -> dict:
-    from tools.manim_runner import run_manim_scene
-    from tools.storage import upload_render
+    from agents.manim_scene_workflow import run_manim_scene_workflow
 
     scene_file  = str(_ROOT / "manim_scripts" / "code_animation_scene.py")
-    output_path = f"/tmp/code_anim_{uuid.uuid4().hex}.mp4"
-
-    await run_manim_scene(
+    return await run_manim_scene_workflow(
         scene_file=scene_file,
         scene_class="CodeAnimationScene",
-        args={"code": code, "language": language, "title": title,
-              "highlight_lines": highlight_lines or [], "reveal_mode": reveal_mode,
-              "duration": duration, "style": style},
-        quality="m",
-        output_path=output_path,
-        timeout=300,
+        scene_args={"code": code, "language": language, "title": title,
+                    "highlight_lines": highlight_lines or [], "reveal_mode": reveal_mode,
+                    "duration": duration, "style": style},
+        prefix="code_animations",
+        duration=duration,
+        workflow_thread_id=workflow_thread_id,
+        metadata={"language": language},
     )
-
-    video_url = upload_render(output_path, prefix="code_animations")
-    try:
-        import os as _os; _os.unlink(output_path)
-    except OSError:
-        pass
-
-    return {"video_url": video_url, "duration": duration, "language": language}
 
 
 # ---------------------------------------------------------------------------
@@ -607,30 +536,21 @@ async def impl_generate_timeline(
     duration: float = 12.0,
     style: str = "dark",
     orientation: str = "horizontal",
+    workflow_thread_id: str = "",
 ) -> dict:
-    from tools.manim_runner import run_manim_scene
-    from tools.storage import upload_render
+    from agents.manim_scene_workflow import run_manim_scene_workflow
 
     scene_file  = str(_ROOT / "manim_scripts" / "timeline_scene.py")
-    output_path = f"/tmp/timeline_{uuid.uuid4().hex}.mp4"
-
-    await run_manim_scene(
+    return await run_manim_scene_workflow(
         scene_file=scene_file,
         scene_class="TimelineScene",
-        args={"events": events or [], "title": title, "duration": duration,
-              "style": style, "orientation": orientation},
-        quality="m",
-        output_path=output_path,
-        timeout=300,
+        scene_args={"events": events or [], "title": title, "duration": duration,
+                    "style": style, "orientation": orientation},
+        prefix="timelines",
+        duration=duration,
+        workflow_thread_id=workflow_thread_id,
+        metadata={"title": title},
     )
-
-    video_url = upload_render(output_path, prefix="timelines")
-    try:
-        import os as _os; _os.unlink(output_path)
-    except OSError:
-        pass
-
-    return {"video_url": video_url, "duration": duration, "title": title}
 
 
 # ---------------------------------------------------------------------------
@@ -644,30 +564,21 @@ async def impl_generate_network_graph(
     layout: str = "radial",
     duration: float = 12.0,
     style: str = "dark",
+    workflow_thread_id: str = "",
 ) -> dict:
-    from tools.manim_runner import run_manim_scene
-    from tools.storage import upload_render
+    from agents.manim_scene_workflow import run_manim_scene_workflow
 
     scene_file  = str(_ROOT / "manim_scripts" / "network_graph_scene.py")
-    output_path = f"/tmp/netgraph_{uuid.uuid4().hex}.mp4"
-
-    await run_manim_scene(
+    return await run_manim_scene_workflow(
         scene_file=scene_file,
         scene_class="NetworkGraphScene",
-        args={"nodes": nodes or [], "edges": edges or [], "title": title,
-              "layout": layout, "duration": duration, "style": style},
-        quality="m",
-        output_path=output_path,
-        timeout=300,
+        scene_args={"nodes": nodes or [], "edges": edges or [], "title": title,
+                    "layout": layout, "duration": duration, "style": style},
+        prefix="network_graphs",
+        duration=duration,
+        workflow_thread_id=workflow_thread_id,
+        metadata={"title": title},
     )
-
-    video_url = upload_render(output_path, prefix="network_graphs")
-    try:
-        import os as _os; _os.unlink(output_path)
-    except OSError:
-        pass
-
-    return {"video_url": video_url, "duration": duration, "title": title}
 
 
 # ---------------------------------------------------------------------------

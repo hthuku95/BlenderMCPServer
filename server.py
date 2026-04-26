@@ -88,6 +88,9 @@ async def blender_generate_scene(
     duration: float = 10.0,
     style: str = "cinematic",
     reference_image_url: str = "",
+    include_narration: bool = False,
+    narration_text: str = "",
+    narration_speaker: str = "Emma",
 ) -> str:
     """
     Generate a procedural 3D Blender scene as an MP4 clip.
@@ -100,7 +103,15 @@ async def blender_generate_scene(
 
     Returns JSON: {"video_url": str, "duration": float, "resolution": str, "frames": int}
     """
-    return json.dumps(await impl_generate_scene(prompt, duration, style, reference_image_url))
+    return json.dumps(await impl_generate_scene(
+        prompt,
+        duration,
+        style,
+        reference_image_url,
+        include_narration,
+        narration_text,
+        narration_speaker,
+    ))
 
 
 @mcp.tool()
@@ -234,6 +245,10 @@ async def blender_generate_latex(
     duration: float = 8.0,
     background_style: str = "dark",
     prompt: str = "",
+    include_narration: bool = False,
+    narration_text: str = "",
+    narration_speaker: str = "Emma",
+    workflow_thread_id: str = "",
 ) -> str:
     r"""
     Generate a LaTeX/Manim math equation animation clip.
@@ -252,7 +267,15 @@ async def blender_generate_latex(
     Returns JSON: {"video_url": str, "duration": float, "latex_expression": str}
     """
     return json.dumps(await impl_generate_latex(
-        latex_expression, animation_type, duration, background_style, prompt
+        latex_expression,
+        animation_type,
+        duration,
+        background_style,
+        prompt,
+        include_narration,
+        narration_text,
+        narration_speaker,
+        workflow_thread_id,
     ))
 
 
@@ -262,6 +285,10 @@ async def blender_generate_animation(
     duration: float = 10.0,
     background_style: str = "dark",
     composite_over_scene: bool = True,
+    include_narration: bool = False,
+    narration_text: str = "",
+    narration_speaker: str = "Emma",
+    workflow_thread_id: str = "",
 ) -> str:
     """
     Generate ANY Manim animation from a natural language description.
@@ -293,6 +320,10 @@ async def blender_generate_animation(
         duration=duration,
         background_style=background_style,
         composite_over_scene=composite_over_scene,
+        include_narration=include_narration,
+        narration_text=narration_text,
+        narration_speaker=narration_speaker,
+        workflow_thread_id=workflow_thread_id,
     ))
 
 
@@ -305,6 +336,7 @@ async def blender_generate_chart(
     duration: float = 10.0,
     y_range: str = "[0, 12, 2]",
     colors: str = "[]",
+    workflow_thread_id: str = "",
 ) -> str:
     """
     Generate an animated Manim data visualisation clip.
@@ -331,6 +363,7 @@ async def blender_generate_chart(
         duration=duration,
         y_range=_json.loads(y_range),
         colors=_json.loads(colors),
+        workflow_thread_id=workflow_thread_id,
     ))
 
 
@@ -341,6 +374,7 @@ async def blender_generate_flowchart(
     title: str = "Process Flowchart",
     duration: float = 12.0,
     style: str = "dark",
+    workflow_thread_id: str = "",
 ) -> str:
     """
     Generate an animated Manim flowchart with process boxes, decision diamonds, and arrows.
@@ -362,6 +396,7 @@ async def blender_generate_flowchart(
     return json.dumps(await impl_generate_flowchart(
         nodes=_j.loads(nodes), edges=_j.loads(edges),
         title=title, duration=duration, style=style,
+        workflow_thread_id=workflow_thread_id,
     ))
 
 
@@ -372,6 +407,7 @@ async def blender_generate_3d_math(
     function: str = "wave",
     duration: float = 12.0,
     color: str = "BLUE",
+    workflow_thread_id: str = "",
 ) -> str:
     """
     Generate a 3D mathematics animation using Manim's ThreeDScene.
@@ -389,6 +425,7 @@ async def blender_generate_3d_math(
     return json.dumps(await impl_generate_3d_math(
         scene_type=scene_type, title=title, function=function,
         duration=duration, color=color,
+        workflow_thread_id=workflow_thread_id,
     ))
 
 
@@ -401,6 +438,7 @@ async def blender_generate_code_animation(
     reveal_mode: str = "line_by_line",
     duration: float = 12.0,
     style: str = "monokai",
+    workflow_thread_id: str = "",
 ) -> str:
     """
     Generate an animated code syntax-highlighting clip — ideal for tech tutorials.
@@ -423,6 +461,7 @@ async def blender_generate_code_animation(
         code=code, language=language, title=title,
         highlight_lines=_j.loads(highlight_lines),
         reveal_mode=reveal_mode, duration=duration, style=style,
+        workflow_thread_id=workflow_thread_id,
     ))
 
 
@@ -433,6 +472,7 @@ async def blender_generate_timeline(
     duration: float = 12.0,
     style: str = "dark",
     orientation: str = "horizontal",
+    workflow_thread_id: str = "",
 ) -> str:
     """
     Generate an animated timeline / roadmap / Gantt-style clip.
@@ -453,6 +493,7 @@ async def blender_generate_timeline(
     return json.dumps(await impl_generate_timeline(
         events=_j.loads(events), title=title, duration=duration,
         style=style, orientation=orientation,
+        workflow_thread_id=workflow_thread_id,
     ))
 
 
@@ -464,6 +505,7 @@ async def blender_generate_network_graph(
     layout: str = "radial",
     duration: float = 12.0,
     style: str = "dark",
+    workflow_thread_id: str = "",
 ) -> str:
     """
     Generate an animated network / knowledge graph with nodes and edges.
@@ -484,6 +526,7 @@ async def blender_generate_network_graph(
     return json.dumps(await impl_generate_network_graph(
         nodes=_j.loads(nodes), edges=_j.loads(edges),
         title=title, layout=layout, duration=duration, style=style,
+        workflow_thread_id=workflow_thread_id,
     ))
 
 

@@ -336,6 +336,9 @@ async def blender_generate_chart(
     duration: float = 10.0,
     y_range: str = "[0, 12, 2]",
     colors: str = "[]",
+    include_narration: bool = False,
+    narration_text: str = "",
+    narration_speaker: str = "Emma",
     workflow_thread_id: str = "",
 ) -> str:
     """
@@ -363,6 +366,9 @@ async def blender_generate_chart(
         duration=duration,
         y_range=_json.loads(y_range),
         colors=_json.loads(colors),
+        include_narration=include_narration,
+        narration_text=narration_text,
+        narration_speaker=narration_speaker,
         workflow_thread_id=workflow_thread_id,
     ))
 
@@ -374,6 +380,9 @@ async def blender_generate_flowchart(
     title: str = "Process Flowchart",
     duration: float = 12.0,
     style: str = "dark",
+    include_narration: bool = False,
+    narration_text: str = "",
+    narration_speaker: str = "Emma",
     workflow_thread_id: str = "",
 ) -> str:
     """
@@ -396,6 +405,9 @@ async def blender_generate_flowchart(
     return json.dumps(await impl_generate_flowchart(
         nodes=_j.loads(nodes), edges=_j.loads(edges),
         title=title, duration=duration, style=style,
+        include_narration=include_narration,
+        narration_text=narration_text,
+        narration_speaker=narration_speaker,
         workflow_thread_id=workflow_thread_id,
     ))
 
@@ -407,6 +419,9 @@ async def blender_generate_3d_math(
     function: str = "wave",
     duration: float = 12.0,
     color: str = "BLUE",
+    include_narration: bool = False,
+    narration_text: str = "",
+    narration_speaker: str = "Emma",
     workflow_thread_id: str = "",
 ) -> str:
     """
@@ -425,6 +440,9 @@ async def blender_generate_3d_math(
     return json.dumps(await impl_generate_3d_math(
         scene_type=scene_type, title=title, function=function,
         duration=duration, color=color,
+        include_narration=include_narration,
+        narration_text=narration_text,
+        narration_speaker=narration_speaker,
         workflow_thread_id=workflow_thread_id,
     ))
 
@@ -438,6 +456,9 @@ async def blender_generate_code_animation(
     reveal_mode: str = "line_by_line",
     duration: float = 12.0,
     style: str = "monokai",
+    include_narration: bool = False,
+    narration_text: str = "",
+    narration_speaker: str = "Emma",
     workflow_thread_id: str = "",
 ) -> str:
     """
@@ -461,6 +482,9 @@ async def blender_generate_code_animation(
         code=code, language=language, title=title,
         highlight_lines=_j.loads(highlight_lines),
         reveal_mode=reveal_mode, duration=duration, style=style,
+        include_narration=include_narration,
+        narration_text=narration_text,
+        narration_speaker=narration_speaker,
         workflow_thread_id=workflow_thread_id,
     ))
 
@@ -472,6 +496,9 @@ async def blender_generate_timeline(
     duration: float = 12.0,
     style: str = "dark",
     orientation: str = "horizontal",
+    include_narration: bool = False,
+    narration_text: str = "",
+    narration_speaker: str = "Emma",
     workflow_thread_id: str = "",
 ) -> str:
     """
@@ -493,6 +520,9 @@ async def blender_generate_timeline(
     return json.dumps(await impl_generate_timeline(
         events=_j.loads(events), title=title, duration=duration,
         style=style, orientation=orientation,
+        include_narration=include_narration,
+        narration_text=narration_text,
+        narration_speaker=narration_speaker,
         workflow_thread_id=workflow_thread_id,
     ))
 
@@ -505,6 +535,9 @@ async def blender_generate_network_graph(
     layout: str = "radial",
     duration: float = 12.0,
     style: str = "dark",
+    include_narration: bool = False,
+    narration_text: str = "",
+    narration_speaker: str = "Emma",
     workflow_thread_id: str = "",
 ) -> str:
     """
@@ -526,6 +559,9 @@ async def blender_generate_network_graph(
     return json.dumps(await impl_generate_network_graph(
         nodes=_j.loads(nodes), edges=_j.loads(edges),
         title=title, layout=layout, duration=duration, style=style,
+        include_narration=include_narration,
+        narration_text=narration_text,
+        narration_speaker=narration_speaker,
         workflow_thread_id=workflow_thread_id,
     ))
 
@@ -631,6 +667,10 @@ async def blender_generate_text_animation(
     duration: float = 8.0,
     font_size: int = 72,
     words_to_highlight: str = "[]",
+    include_narration: bool = False,
+    narration_text: str = "",
+    narration_speaker: str = "Emma",
+    workflow_thread_id: str = "",
 ) -> str:
     """
     Generate kinetic typography / text animation using Manim.
@@ -653,6 +693,10 @@ async def blender_generate_text_animation(
         text=text, subtitle=subtitle, mode=mode, color=color,
         bg_color=bg_color, duration=duration, font_size=font_size,
         words_to_highlight=_j.loads(words_to_highlight),
+        include_narration=include_narration,
+        narration_text=narration_text,
+        narration_speaker=narration_speaker,
+        workflow_thread_id=workflow_thread_id,
     ))
 
 
@@ -664,6 +708,10 @@ async def blender_generate_vector_field(
     show_streams: bool = True,
     color: str = "BLUE",
     style: str = "dark",
+    include_narration: bool = False,
+    narration_text: str = "",
+    narration_speaker: str = "Emma",
+    workflow_thread_id: str = "",
 ) -> str:
     """
     Generate an animated vector field / flow visualization using Manim.
@@ -682,6 +730,10 @@ async def blender_generate_vector_field(
     return json.dumps(await impl_generate_vector_field(
         field_type=field_type, title=title, duration=duration,
         show_streams=show_streams, color=color, style=style,
+        include_narration=include_narration,
+        narration_text=narration_text,
+        narration_speaker=narration_speaker,
+        workflow_thread_id=workflow_thread_id,
     ))
 
 
@@ -692,6 +744,10 @@ async def blender_generate_matrix_transform(
     duration: float = 12.0,
     show_vectors: bool = True,
     show_det: bool = True,
+    include_narration: bool = False,
+    narration_text: str = "",
+    narration_speaker: str = "Emma",
+    workflow_thread_id: str = "",
 ) -> str:
     """
     Generate a linear algebra matrix transformation animation using Manim's LinearTransformationScene.
@@ -710,6 +766,10 @@ async def blender_generate_matrix_transform(
     return json.dumps(await impl_generate_matrix_transform(
         matrix=_j.loads(matrix), title=title, duration=duration,
         show_vectors=show_vectors, show_det=show_det,
+        include_narration=include_narration,
+        narration_text=narration_text,
+        narration_speaker=narration_speaker,
+        workflow_thread_id=workflow_thread_id,
     ))
 
 
@@ -722,6 +782,10 @@ async def blender_generate_polar_graph(
     duration: float = 12.0,
     color: str = "BLUE",
     show_label: bool = True,
+    include_narration: bool = False,
+    narration_text: str = "",
+    narration_speaker: str = "Emma",
+    workflow_thread_id: str = "",
 ) -> str:
     """
     Generate a polar coordinate / complex plane / function graph animation using Manim.
@@ -743,6 +807,10 @@ async def blender_generate_polar_graph(
     return json.dumps(await impl_generate_polar_graph(
         plane_type=plane_type, title=title, function=function,
         k_value=k_value, duration=duration, color=color, show_label=show_label,
+        include_narration=include_narration,
+        narration_text=narration_text,
+        narration_speaker=narration_speaker,
+        workflow_thread_id=workflow_thread_id,
     ))
 
 
@@ -754,6 +822,10 @@ async def blender_generate_geometry_proof(
     color_a: str = "BLUE",
     color_b: str = "RED",
     show_labels: bool = True,
+    include_narration: bool = False,
+    narration_text: str = "",
+    narration_speaker: str = "Emma",
+    workflow_thread_id: str = "",
 ) -> str:
     """
     Generate an animated geometry proof using Manim.
@@ -774,6 +846,10 @@ async def blender_generate_geometry_proof(
     return json.dumps(await impl_generate_geometry_proof(
         proof_type=proof_type, title=title, duration=duration,
         color_a=color_a, color_b=color_b, show_labels=show_labels,
+        include_narration=include_narration,
+        narration_text=narration_text,
+        narration_speaker=narration_speaker,
+        workflow_thread_id=workflow_thread_id,
     ))
 
 

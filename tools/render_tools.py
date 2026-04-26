@@ -327,6 +327,9 @@ async def impl_generate_chart(
     y_range: list | None = None,
     colors: list | None = None,
     composite_over_scene: bool = False,
+    include_narration: bool = False,
+    narration_text: str = "",
+    narration_speaker: str = "Emma",
     workflow_thread_id: str = "",
 ) -> dict:
     """
@@ -363,6 +366,9 @@ async def impl_generate_chart(
         },
         prefix="charts",
         duration=duration,
+        include_narration=include_narration,
+        narration_text=narration_text,
+        narration_speaker=narration_speaker,
         workflow_thread_id=workflow_thread_id,
         metadata={
             "chart_type": chart_type,
@@ -453,6 +459,9 @@ async def impl_generate_flowchart(
     title: str = "Process Flowchart",
     duration: float = 12.0,
     style: str = "dark",
+    include_narration: bool = False,
+    narration_text: str = "",
+    narration_speaker: str = "Emma",
     workflow_thread_id: str = "",
 ) -> dict:
     from agents.manim_scene_workflow import run_manim_scene_workflow
@@ -464,6 +473,9 @@ async def impl_generate_flowchart(
         scene_args={"nodes": nodes or [], "edges": edges or [], "title": title, "duration": duration, "style": style},
         prefix="flowcharts",
         duration=duration,
+        include_narration=include_narration,
+        narration_text=narration_text,
+        narration_speaker=narration_speaker,
         workflow_thread_id=workflow_thread_id,
         metadata={"title": title},
     )
@@ -479,6 +491,9 @@ async def impl_generate_3d_math(
     function: str = "wave",
     duration: float = 12.0,
     color: str = "BLUE",
+    include_narration: bool = False,
+    narration_text: str = "",
+    narration_speaker: str = "Emma",
     workflow_thread_id: str = "",
 ) -> dict:
     from agents.manim_scene_workflow import run_manim_scene_workflow
@@ -491,6 +506,9 @@ async def impl_generate_3d_math(
                     "duration": duration, "color": color},
         prefix="3d_math",
         duration=duration,
+        include_narration=include_narration,
+        narration_text=narration_text,
+        narration_speaker=narration_speaker,
         workflow_thread_id=workflow_thread_id,
         metadata={"scene_type": scene_type},
     )
@@ -508,6 +526,9 @@ async def impl_generate_code_animation(
     reveal_mode: str = "line_by_line",
     duration: float = 12.0,
     style: str = "monokai",
+    include_narration: bool = False,
+    narration_text: str = "",
+    narration_speaker: str = "Emma",
     workflow_thread_id: str = "",
 ) -> dict:
     from agents.manim_scene_workflow import run_manim_scene_workflow
@@ -521,6 +542,9 @@ async def impl_generate_code_animation(
                     "duration": duration, "style": style},
         prefix="code_animations",
         duration=duration,
+        include_narration=include_narration,
+        narration_text=narration_text,
+        narration_speaker=narration_speaker,
         workflow_thread_id=workflow_thread_id,
         metadata={"language": language},
     )
@@ -536,6 +560,9 @@ async def impl_generate_timeline(
     duration: float = 12.0,
     style: str = "dark",
     orientation: str = "horizontal",
+    include_narration: bool = False,
+    narration_text: str = "",
+    narration_speaker: str = "Emma",
     workflow_thread_id: str = "",
 ) -> dict:
     from agents.manim_scene_workflow import run_manim_scene_workflow
@@ -548,6 +575,9 @@ async def impl_generate_timeline(
                     "style": style, "orientation": orientation},
         prefix="timelines",
         duration=duration,
+        include_narration=include_narration,
+        narration_text=narration_text,
+        narration_speaker=narration_speaker,
         workflow_thread_id=workflow_thread_id,
         metadata={"title": title},
     )
@@ -564,6 +594,9 @@ async def impl_generate_network_graph(
     layout: str = "radial",
     duration: float = 12.0,
     style: str = "dark",
+    include_narration: bool = False,
+    narration_text: str = "",
+    narration_speaker: str = "Emma",
     workflow_thread_id: str = "",
 ) -> dict:
     from agents.manim_scene_workflow import run_manim_scene_workflow
@@ -576,6 +609,9 @@ async def impl_generate_network_graph(
                     "layout": layout, "duration": duration, "style": style},
         prefix="network_graphs",
         duration=duration,
+        include_narration=include_narration,
+        narration_text=narration_text,
+        narration_speaker=narration_speaker,
         workflow_thread_id=workflow_thread_id,
         metadata={"title": title},
     )
@@ -724,31 +760,28 @@ async def impl_generate_text_animation(
     duration: float = 8.0,
     font_size: int = 72,
     words_to_highlight: list | None = None,
+    include_narration: bool = False,
+    narration_text: str = "",
+    narration_speaker: str = "Emma",
+    workflow_thread_id: str = "",
 ) -> dict:
-    from tools.manim_runner import run_manim_scene
-    from tools.storage import upload_render
+    from agents.manim_scene_workflow import run_manim_scene_workflow
 
     scene_file  = str(_ROOT / "manim_scripts" / "text_animation_scene.py")
-    output_path = f"/tmp/textanim_{uuid.uuid4().hex}.mp4"
-
-    await run_manim_scene(
+    return await run_manim_scene_workflow(
         scene_file=scene_file,
         scene_class="TextAnimationScene",
-        args={"text": text, "subtitle": subtitle, "mode": mode, "color": color,
-              "bg_color": bg_color, "duration": duration, "font_size": font_size,
-              "words_to_highlight": words_to_highlight or []},
-        quality="m",
-        output_path=output_path,
-        timeout=300,
+        scene_args={"text": text, "subtitle": subtitle, "mode": mode, "color": color,
+                    "bg_color": bg_color, "duration": duration, "font_size": font_size,
+                    "words_to_highlight": words_to_highlight or []},
+        prefix="text_animations",
+        duration=duration,
+        include_narration=include_narration,
+        narration_text=narration_text,
+        narration_speaker=narration_speaker,
+        workflow_thread_id=workflow_thread_id,
+        metadata={"title": text, "mode": mode},
     )
-
-    video_url = upload_render(output_path, prefix="text_animations")
-    try:
-        import os as _os; _os.unlink(output_path)
-    except OSError:
-        pass
-
-    return {"video_url": video_url, "duration": duration, "mode": mode}
 
 
 # ---------------------------------------------------------------------------
@@ -762,30 +795,27 @@ async def impl_generate_vector_field(
     show_streams: bool = True,
     color: str = "BLUE",
     style: str = "dark",
+    include_narration: bool = False,
+    narration_text: str = "",
+    narration_speaker: str = "Emma",
+    workflow_thread_id: str = "",
 ) -> dict:
-    from tools.manim_runner import run_manim_scene
-    from tools.storage import upload_render
+    from agents.manim_scene_workflow import run_manim_scene_workflow
 
     scene_file  = str(_ROOT / "manim_scripts" / "vector_field_scene.py")
-    output_path = f"/tmp/vecfield_{uuid.uuid4().hex}.mp4"
-
-    await run_manim_scene(
+    return await run_manim_scene_workflow(
         scene_file=scene_file,
         scene_class="VectorFieldScene",
-        args={"field_type": field_type, "title": title, "duration": duration,
-              "show_streams": show_streams, "color": color, "style": style},
-        quality="m",
-        output_path=output_path,
-        timeout=300,
+        scene_args={"field_type": field_type, "title": title, "duration": duration,
+                    "show_streams": show_streams, "color": color, "style": style},
+        prefix="vector_fields",
+        duration=duration,
+        include_narration=include_narration,
+        narration_text=narration_text,
+        narration_speaker=narration_speaker,
+        workflow_thread_id=workflow_thread_id,
+        metadata={"title": title, "field_type": field_type},
     )
-
-    video_url = upload_render(output_path, prefix="vector_fields")
-    try:
-        import os as _os; _os.unlink(output_path)
-    except OSError:
-        pass
-
-    return {"video_url": video_url, "duration": duration, "field_type": field_type}
 
 
 # ---------------------------------------------------------------------------
@@ -798,30 +828,27 @@ async def impl_generate_matrix_transform(
     duration: float = 12.0,
     show_vectors: bool = True,
     show_det: bool = True,
+    include_narration: bool = False,
+    narration_text: str = "",
+    narration_speaker: str = "Emma",
+    workflow_thread_id: str = "",
 ) -> dict:
-    from tools.manim_runner import run_manim_scene
-    from tools.storage import upload_render
+    from agents.manim_scene_workflow import run_manim_scene_workflow
 
     scene_file  = str(_ROOT / "manim_scripts" / "matrix_transform_scene.py")
-    output_path = f"/tmp/matrix_{uuid.uuid4().hex}.mp4"
-
-    await run_manim_scene(
+    return await run_manim_scene_workflow(
         scene_file=scene_file,
         scene_class="MatrixTransformScene",
-        args={"matrix": matrix or [[0, -1], [1, 0]], "title": title,
-              "duration": duration, "show_vectors": show_vectors, "show_det": show_det},
-        quality="m",
-        output_path=output_path,
-        timeout=300,
+        scene_args={"matrix": matrix or [[0, -1], [1, 0]], "title": title,
+                    "duration": duration, "show_vectors": show_vectors, "show_det": show_det},
+        prefix="matrix_transforms",
+        duration=duration,
+        include_narration=include_narration,
+        narration_text=narration_text,
+        narration_speaker=narration_speaker,
+        workflow_thread_id=workflow_thread_id,
+        metadata={"title": title},
     )
-
-    video_url = upload_render(output_path, prefix="matrix_transforms")
-    try:
-        import os as _os; _os.unlink(output_path)
-    except OSError:
-        pass
-
-    return {"video_url": video_url, "duration": duration}
 
 
 # ---------------------------------------------------------------------------
@@ -836,30 +863,27 @@ async def impl_generate_polar_graph(
     duration: float = 12.0,
     color: str = "BLUE",
     show_label: bool = True,
+    include_narration: bool = False,
+    narration_text: str = "",
+    narration_speaker: str = "Emma",
+    workflow_thread_id: str = "",
 ) -> dict:
-    from tools.manim_runner import run_manim_scene
-    from tools.storage import upload_render
+    from agents.manim_scene_workflow import run_manim_scene_workflow
 
     scene_file  = str(_ROOT / "manim_scripts" / "polar_graph_scene.py")
-    output_path = f"/tmp/polar_{uuid.uuid4().hex}.mp4"
-
-    await run_manim_scene(
+    return await run_manim_scene_workflow(
         scene_file=scene_file,
         scene_class="PolarGraphScene",
-        args={"plane_type": plane_type, "title": title, "function": function,
-              "k_value": k_value, "duration": duration, "color": color, "show_label": show_label},
-        quality="m",
-        output_path=output_path,
-        timeout=300,
+        scene_args={"plane_type": plane_type, "title": title, "function": function,
+                    "k_value": k_value, "duration": duration, "color": color, "show_label": show_label},
+        prefix="polar_graphs",
+        duration=duration,
+        include_narration=include_narration,
+        narration_text=narration_text,
+        narration_speaker=narration_speaker,
+        workflow_thread_id=workflow_thread_id,
+        metadata={"title": title, "plane_type": plane_type},
     )
-
-    video_url = upload_render(output_path, prefix="polar_graphs")
-    try:
-        import os as _os; _os.unlink(output_path)
-    except OSError:
-        pass
-
-    return {"video_url": video_url, "duration": duration, "plane_type": plane_type}
 
 
 # ---------------------------------------------------------------------------
@@ -873,30 +897,27 @@ async def impl_generate_geometry_proof(
     color_a: str = "BLUE",
     color_b: str = "RED",
     show_labels: bool = True,
+    include_narration: bool = False,
+    narration_text: str = "",
+    narration_speaker: str = "Emma",
+    workflow_thread_id: str = "",
 ) -> dict:
-    from tools.manim_runner import run_manim_scene
-    from tools.storage import upload_render
+    from agents.manim_scene_workflow import run_manim_scene_workflow
 
     scene_file  = str(_ROOT / "manim_scripts" / "geometry_proof_scene.py")
-    output_path = f"/tmp/geoproof_{uuid.uuid4().hex}.mp4"
-
-    await run_manim_scene(
+    return await run_manim_scene_workflow(
         scene_file=scene_file,
         scene_class="GeometryProofScene",
-        args={"proof_type": proof_type, "title": title, "duration": duration,
-              "color_a": color_a, "color_b": color_b, "show_labels": show_labels},
-        quality="m",
-        output_path=output_path,
-        timeout=400,
+        scene_args={"proof_type": proof_type, "title": title, "duration": duration,
+                    "color_a": color_a, "color_b": color_b, "show_labels": show_labels},
+        prefix="geometry_proofs",
+        duration=duration,
+        include_narration=include_narration,
+        narration_text=narration_text,
+        narration_speaker=narration_speaker,
+        workflow_thread_id=workflow_thread_id,
+        metadata={"title": title, "proof_type": proof_type},
     )
-
-    video_url = upload_render(output_path, prefix="geometry_proofs")
-    try:
-        import os as _os; _os.unlink(output_path)
-    except OSError:
-        pass
-
-    return {"video_url": video_url, "duration": duration, "proof_type": proof_type}
 
 
 # ---------------------------------------------------------------------------

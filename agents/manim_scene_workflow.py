@@ -25,6 +25,9 @@ class ManimSceneWorkflowState(TypedDict):
     scene_args: dict
     prefix: str
     duration: float
+    include_narration: bool
+    narration_text: str
+    narration_speaker: str
     output_path: str
     metadata: dict
     result: dict
@@ -64,6 +67,32 @@ async def _upload_node(state: ManimSceneWorkflowState) -> ManimSceneWorkflowStat
         "duration": state["duration"],
     }
     result.update(state.get("metadata", {}))
+
+    if state.get("include_narration"):
+        try:
+            from tools.vibevoice import attach_narration_assets
+
+            fallback_text = (
+                state.get("narration_text")
+                or state.get("metadata", {}).get("title")
+                or state.get("scene_class", "Manim scene")
+            )
+            result.update(
+                await attach_narration_assets(
+                    video_path=output_path,
+                    narration_text=str(fallback_text).strip(),
+                    speaker=state.get("narration_speaker") or "Emma",
+                    prefix=state["prefix"],
+                    metadata={
+                        "workflow_thread_id": state["workflow_thread_id"],
+                        "tool": state["scene_class"],
+                        **(state.get("metadata", {}) or {}),
+                    },
+                )
+            )
+        except Exception as exc:
+            result["narration_error"] = str(exc)
+
     return {**state, "result": result, "error": ""}
 
 
@@ -98,6 +127,9 @@ async def run_manim_scene_workflow(
     prefix: str,
     duration: float,
     metadata: dict | None = None,
+    include_narration: bool = False,
+    narration_text: str = "",
+    narration_speaker: str = "Emma",
     workflow_thread_id: str = "",
     output_path: str = "",
 ) -> dict:
@@ -115,6 +147,9 @@ async def run_manim_scene_workflow(
         "scene_args": scene_args,
         "prefix": prefix,
         "duration": duration,
+        "include_narration": include_narration,
+        "narration_text": narration_text,
+        "narration_speaker": narration_speaker,
         "output_path": output_path,
         "metadata": metadata or {},
         "result": {},

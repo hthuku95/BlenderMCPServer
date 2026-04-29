@@ -97,7 +97,7 @@ class JobQueue:
         job_id = str(uuid.uuid4())
         normalized_args = dict(args or {})
         workflow_thread_id = str(normalized_args.get("workflow_thread_id") or job_id)
-        normalized_args.setdefault("workflow_thread_id", workflow_thread_id)
+        normalized_args["workflow_thread_id"] = workflow_thread_id
         status = JobStatus(job_id=job_id, tool=tool_name, workflow_thread_id=workflow_thread_id)
         status.result = normalized_args  # store args temporarily (overwritten on completion)
         self._jobs[job_id] = status

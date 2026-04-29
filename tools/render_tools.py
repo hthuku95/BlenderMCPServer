@@ -318,6 +318,37 @@ async def impl_generate_animation(
     )
 
 
+async def impl_generate_animation_compat(
+    description: str = "",
+    prompt: str = "",
+    duration: float = 10.0,
+    background_style: str = "dark",
+    background: str = "",
+    composite_over_scene: bool = True,
+    quality: str = "m",
+    include_narration: bool = False,
+    narration_text: str = "",
+    narration_speaker: str = "Emma",
+    workflow_thread_id: str = "",
+) -> dict:
+    """
+    Backward-compatible wrapper for older callers that still send prompt/background/quality.
+    """
+    _ = quality
+    resolved_description = description or prompt
+    resolved_background_style = background_style or background or "dark"
+    return await impl_generate_animation(
+        description=resolved_description,
+        duration=duration,
+        background_style=resolved_background_style,
+        composite_over_scene=composite_over_scene,
+        include_narration=include_narration,
+        narration_text=narration_text,
+        narration_speaker=narration_speaker,
+        workflow_thread_id=workflow_thread_id,
+    )
+
+
 async def impl_generate_chart(
     chart_type: str = "bar_chart",
     title: str = "Data",
@@ -447,6 +478,35 @@ async def impl_generate_latex(
     except OSError:
         pass
     return response
+
+
+async def impl_generate_latex_compat(
+    latex_expression: str = "",
+    latex: str = "",
+    animation_type: str = "appear",
+    duration: float = 8.0,
+    background_style: str = "dark",
+    prompt: str = "",
+    include_narration: bool = False,
+    narration_text: str = "",
+    narration_speaker: str = "Emma",
+    workflow_thread_id: str = "",
+) -> dict:
+    """
+    Backward-compatible wrapper for older callers that still send latex instead of latex_expression.
+    """
+    resolved_expression = latex_expression or latex
+    return await impl_generate_latex(
+        latex_expression=resolved_expression,
+        animation_type=animation_type,
+        duration=duration,
+        background_style=background_style,
+        prompt=prompt,
+        include_narration=include_narration,
+        narration_text=narration_text,
+        narration_speaker=narration_speaker,
+        workflow_thread_id=workflow_thread_id,
+    )
 
 
 # ---------------------------------------------------------------------------

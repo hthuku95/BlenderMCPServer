@@ -10,7 +10,33 @@ The equation is centred horizontally and placed at `eq_y_position` (0.0 = top, 1
 from __future__ import annotations
 
 import os
+import shutil
+import subprocess
 from pathlib import Path
+
+
+def _require_binary(name: str) -> str:
+    path = shutil.which(name)
+    if not path:
+        raise RuntimeError(f"Required binary '{name}' was not found on PATH")
+    return path
+
+
+def _probe_duration(video_path: str) -> float:
+    ffprobe = _require_binary("ffprobe")
+    proc = subprocess.run(
+        [
+            ffprobe,
+            "-v", "error",
+            "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1",
+            video_path,
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return float(proc.stdout.strip())
 
 
 def composite_manim_over_blender(
@@ -38,13 +64,6 @@ def composite_manim_over_blender(
     Returns: Absolute path to the composited output MP4.
     Raises:  RuntimeError on failure.
     """
-    try:
-        from moviepy.editor import VideoFileClip, CompositeVideoClip
-    except ImportError as exc:
-        raise RuntimeError(
-            "moviepy is not installed. Run: pip install moviepy"
-        ) from exc
-
     if not os.path.exists(blender_video_path):
         raise FileNotFoundError(f"Blender video not found: {blender_video_path}")
     if not os.path.exists(equation_video_path):
@@ -54,43 +73,42 @@ def composite_manim_over_blender(
         stem = Path(blender_video_path).stem
         output_path = str(Path(blender_video_path).parent / f"{stem}_composited.mp4")
 
-    # Load clips
-    scene_clip = VideoFileClip(blender_video_path)
-    eq_clip = VideoFileClip(equation_video_path, has_mask=True)
-
-    # Scale if requested
-    if eq_scale != 1.0:
-        eq_clip = eq_clip.resize(eq_scale)
-
-    # Trim equation to scene duration (loop if shorter, trim if longer)
-    if eq_clip.duration < scene_clip.duration:
-        eq_clip = eq_clip.loop(duration=scene_clip.duration)
-    else:
-        eq_clip = eq_clip.subclip(0, scene_clip.duration)
-
-    # Pixel position from relative coords
-    scene_w, scene_h = scene_clip.size
-    eq_w, eq_h = eq_clip.size
-    px = int(scene_w * eq_x_position - eq_w / 2)
-    py = int(scene_h * eq_y_position - eq_h / 2)
-    eq_clip = eq_clip.set_position((px, py))
-
-    final = CompositeVideoClip([scene_clip, eq_clip], size=scene_clip.size)
-    final.write_videofile(
-        output_path,
-        fps=fps,
-        codec="libx264",
-        audio=False,
-        verbose=False,
-        logger=None,
+    ffmpeg = _require_binary("ffmpeg")
+    scene_duration = _probe_duration(blender_video_path)
+    overlay_filter = (
+        f"[1:v]scale=iw*{eq_scale}:ih*{eq_scale}[eq];"
+        f"[0:v][eq]overlay="
+        f"x='W*{eq_x_position}-overlay_w/2':"
+        f"y='H*{eq_y_position}-overlay_h/2':"
+        f"shortest=1,format=yuv420p[v]"
     )
-
-    scene_clip.close()
-    eq_clip.close()
-    final.close()
+    proc = subprocess.run(
+        [
+            ffmpeg,
+            "-y",
+            "-i", blender_video_path,
+            "-stream_loop", "-1",
+            "-i", equation_video_path,
+            "-filter_complex", overlay_filter,
+            "-map", "[v]",
+            "-an",
+            "-r", str(fps),
+            "-t", str(scene_duration),
+            "-c:v", "libx264",
+            "-pix_fmt", "yuv420p",
+            output_path,
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(
+            "ffmpeg composite failed.\n"
+            f"STDERR (last 2000 chars):\n{proc.stderr[-2000:]}"
+        )
 
     if not os.path.exists(output_path):
-        raise RuntimeError("MoviePy ran but produced no output file")
+        raise RuntimeError("ffmpeg ran but produced no composited output file")
 
     return os.path.abspath(output_path)
 
@@ -106,20 +124,30 @@ def add_audio_to_video(video_path: str, audio_path: str, output_path: str | None
 
     Returns: Absolute path to the output MP4 with audio.
     """
-    try:
-        from moviepy.editor import VideoFileClip, AudioFileClip
-    except ImportError as exc:
-        raise RuntimeError("moviepy is not installed") from exc
-
     if output_path is None:
         stem = Path(video_path).stem
         output_path = str(Path(video_path).parent / f"{stem}_audio.mp4")
 
-    video = VideoFileClip(video_path)
-    audio = AudioFileClip(audio_path).subclip(0, video.duration)
-    video = video.set_audio(audio)
-    video.write_videofile(output_path, codec="libx264", audio_codec="aac", verbose=False, logger=None)
-    video.close()
-    audio.close()
+    ffmpeg = _require_binary("ffmpeg")
+    proc = subprocess.run(
+        [
+            ffmpeg,
+            "-y",
+            "-i", video_path,
+            "-i", audio_path,
+            "-filter:a", "apad",
+            "-c:v", "copy",
+            "-c:a", "aac",
+            "-shortest",
+            output_path,
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(
+            "ffmpeg audio mux failed.\n"
+            f"STDERR (last 2000 chars):\n{proc.stderr[-2000:]}"
+        )
 
     return os.path.abspath(output_path)

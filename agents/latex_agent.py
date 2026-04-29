@@ -29,6 +29,7 @@ from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 from langgraph.graph import END, StateGraph
 
 from tools.workflow_runtime import get_checkpointer, workflow_config
+from tools.progress_store import report_workflow_stage
 
 # ---------------------------------------------------------------------------
 # State
@@ -49,6 +50,12 @@ class LatexState(TypedDict):
     output_path: str
     workflow_thread_id: str
     error: str
+    progress_stage: str
+    progress_message: str
+    progress_state: str
+    progress_details: dict
+    progress_updated_at: str
+    progress_events: list[dict]
 
 
 # ---------------------------------------------------------------------------
@@ -70,13 +77,30 @@ def _tools():
 
 async def _classify_node(state: LatexState) -> LatexState:
     """Decide Option A vs B based on animation_type or forced option."""
+    state = await report_workflow_stage(
+        state,
+        tool="blender_generate_latex",
+        stage="classify",
+        message="Selecting the best LaTeX animation pipeline",
+        details={
+            "animation_type": state.get("animation_type", "appear"),
+            "forced_option": state.get("option", "auto"),
+        },
+    )
     if state.get("option", "auto") in ("A", "B"):
         chosen = state["option"]
     elif state.get("animation_type") in ("morph", "step_by_step"):
         chosen = "B"
     else:
         chosen = "A"
-    return {**state, "chosen_option": chosen, "error": ""}
+    next_state = {**state, "chosen_option": chosen, "error": ""}
+    return await report_workflow_stage(
+        next_state,
+        tool="blender_generate_latex",
+        stage="pipeline_selected",
+        message=f"Selected LaTeX pipeline option {chosen}",
+        details={"chosen_option": chosen},
+    )
 
 
 async def _option_a_node(state: LatexState) -> LatexState:
@@ -84,6 +108,13 @@ async def _option_a_node(state: LatexState) -> LatexState:
     Option A: compile LaTeX → SVG → Blender 3D object → MP4.
     """
     latex_to_svg, _, run_blender_script, _ = _tools()
+    state = await report_workflow_stage(
+        state,
+        tool="blender_generate_latex",
+        stage="compile_svg",
+        message="Compiling LaTeX expression to SVG geometry",
+        details={"chosen_option": "A"},
+    )
 
     with tempfile.NamedTemporaryFile(suffix=".svg", delete=False, prefix="latex_a_") as f:
         svg_tmp = f.name
@@ -97,6 +128,13 @@ async def _option_a_node(state: LatexState) -> LatexState:
 
     script = str(
         Path(__file__).parent.parent / "blender_scripts" / "latex_3d_object.py"
+    )
+    state = await report_workflow_stage(
+        state,
+        tool="blender_generate_latex",
+        stage="render_blender_latex",
+        message="Rendering 3D Blender animation from SVG geometry",
+        details={"background_style": state.get("background_style", "dark")},
     )
     try:
         result = await run_blender_script(
@@ -114,12 +152,19 @@ async def _option_a_node(state: LatexState) -> LatexState:
     except RuntimeError as e:
         return {**state, "error": f"Blender 3D object render failed: {e}"}
 
-    return {
+    next_state = {
         **state,
         "svg_path": svg_path,
         "output_path": result.get("output_path", output_mp4),
         "error": "",
     }
+    return await report_workflow_stage(
+        next_state,
+        tool="blender_generate_latex",
+        stage="latex_render_complete",
+        message="LaTeX 3D render completed",
+        details={"chosen_option": "A"},
+    )
 
 
 async def _option_b_node(state: LatexState) -> LatexState:
@@ -135,6 +180,13 @@ async def _option_b_node(state: LatexState) -> LatexState:
        latex_transparent.py template — always a working safe result.
     """
     _, run_manim_scene, run_blender_script, composite_manim_over_blender = _tools()
+    state = await report_workflow_stage(
+        state,
+        tool="blender_generate_latex",
+        stage="generate_manim_latex",
+        message="Generating transparent Manim equation animation",
+        details={"chosen_option": "B", "animation_type": state.get("animation_type", "appear")},
+    )
 
     duration = float(state.get("duration", 8.0))
     output_mp4 = state.get("output_path") or f"/tmp/latex_b_{os.getpid()}.mp4"
@@ -208,6 +260,13 @@ async def _option_b_node(state: LatexState) -> LatexState:
             return {**state, "error": f"Manim transparent render failed: {e}"}
 
     # Step 2 — Blender background scene
+    state = await report_workflow_stage(
+        state,
+        tool="blender_generate_latex",
+        stage="render_background_scene",
+        message="Rendering Blender background scene for equation composite",
+        details={},
+    )
     scene_script = str(
         Path(__file__).parent.parent / "blender_scripts" / "base_scene.py"
     )
@@ -228,6 +287,13 @@ async def _option_b_node(state: LatexState) -> LatexState:
         return {**state, "error": f"Blender scene render failed: {e}"}
 
     # Step 3 — composite (run in executor to avoid blocking asyncio event loop)
+    state = await report_workflow_stage(
+        state,
+        tool="blender_generate_latex",
+        stage="composite_equation",
+        message="Compositing Manim equation over Blender background",
+        details={},
+    )
     try:
         loop = asyncio.get_event_loop()
         final = await loop.run_in_executor(
@@ -245,13 +311,20 @@ async def _option_b_node(state: LatexState) -> LatexState:
     except Exception as e:
         return {**state, "error": f"Compositing failed: {e}"}
 
-    return {
+    next_state = {
         **state,
         "eq_video_path": eq_video,
         "scene_video_path": scene_video,
         "output_path": final,
         "error": "",
     }
+    return await report_workflow_stage(
+        next_state,
+        tool="blender_generate_latex",
+        stage="latex_render_complete",
+        message="LaTeX composite render completed",
+        details={"chosen_option": "B"},
+    )
 
 
 def _route(state: LatexState) -> Literal["option_a", "option_b"]:
@@ -323,6 +396,12 @@ async def run_latex_agent(
         "output_path": output_path or "",
         "workflow_thread_id": thread_id,
         "error": "",
+        "progress_stage": "queued",
+        "progress_message": "LaTeX workflow queued",
+        "progress_state": "pending",
+        "progress_details": {},
+        "progress_updated_at": "",
+        "progress_events": [],
     }
 
     final = await graph.ainvoke(initial, config=workflow_config(thread_id, "latex_workflow"))

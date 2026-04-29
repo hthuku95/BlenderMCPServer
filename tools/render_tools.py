@@ -10,6 +10,8 @@ import os
 import uuid
 from pathlib import Path
 
+from tools.progress_store import record_job_progress
+
 # Root of the BlenderMCPServer package
 _ROOT = Path(__file__).parent.parent
 logger = logging.getLogger(__name__)
@@ -444,6 +446,15 @@ async def impl_generate_latex(
         raise RuntimeError(result["error"])
 
     final_path = result.get("output_path", output_path)
+    await record_job_progress(
+        job_id=workflow_thread_id or "",
+        workflow_thread_id=workflow_thread_id or "",
+        tool="blender_generate_latex",
+        state="running",
+        stage="upload_output",
+        message="Uploading rendered LaTeX output",
+        details={"pipeline": result.get("chosen_option", "A")},
+    )
     video_url = upload_render(final_path, prefix="latex")
 
     response = {
@@ -457,6 +468,15 @@ async def impl_generate_latex(
         try:
             from tools.vibevoice import attach_narration_assets
 
+            await record_job_progress(
+                job_id=workflow_thread_id or "",
+                workflow_thread_id=workflow_thread_id or "",
+                tool="blender_generate_latex",
+                state="running",
+                stage="attach_narration",
+                message="Generating and attaching VibeVoice narration",
+                details={"speaker": narration_speaker},
+            )
             fallback_text = narration_text or prompt or f"Explain the expression {latex_expression}"
             response.update(
                 await attach_narration_assets(

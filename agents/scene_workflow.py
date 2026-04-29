@@ -22,6 +22,7 @@ from tools.workflow_runtime import (
     workflow_config,
     workflow_persistence_mode,
 )
+from tools.progress_store import report_workflow_stage
 
 logger = logging.getLogger(__name__)
 _ROOT = Path(__file__).parent.parent
@@ -44,11 +45,29 @@ class SceneWorkflowState(TypedDict):
     scene_params: dict
     result: dict
     error: str
+    progress_stage: str
+    progress_message: str
+    progress_state: str
+    progress_details: dict
+    progress_updated_at: str
+    progress_events: list[dict]
 
 
 async def _render_scene_node(state: SceneWorkflowState) -> SceneWorkflowState:
     if state.get("error"):
         return state
+
+    state = await report_workflow_stage(
+        state,
+        tool="blender_generate_scene",
+        stage="render_scene",
+        message="Preparing scene render workflow",
+        details={
+            "style": state["style"],
+            "duration": state["duration"],
+            "has_reference_image": bool(state.get("reference_image_url")),
+        },
+    )
 
     prompt = state["prompt"]
     duration = state["duration"]
@@ -56,6 +75,13 @@ async def _render_scene_node(state: SceneWorkflowState) -> SceneWorkflowState:
     reference_image_url = state.get("reference_image_url", "")
 
     if reference_image_url:
+        state = await report_workflow_stage(
+            state,
+            tool="blender_generate_scene",
+            stage="analyze_reference",
+            message="Analyzing reference image and planning Blender scene",
+            details={"reference_image_url": reference_image_url},
+        )
         from agents.vision_agent import run_vision_agent
 
         output_path = state.get("output_path") or f"/tmp/blender_vision_{uuid.uuid4().hex}.mp4"
@@ -78,7 +104,7 @@ async def _render_scene_node(state: SceneWorkflowState) -> SceneWorkflowState:
             scene_params.get("camera_angle", "front"),
             scene_params.get("movement_style", "slow_push"),
         )
-        return {
+        next_state = {
             **state,
             "output_path": vision_result.get("output_path", output_path),
             "rendered_video_path": vision_result.get("output_path", output_path),
@@ -87,8 +113,25 @@ async def _render_scene_node(state: SceneWorkflowState) -> SceneWorkflowState:
             "scene_params": scene_params,
             "error": "",
         }
+        return await report_workflow_stage(
+            next_state,
+            tool="blender_generate_scene",
+            stage="reference_render_complete",
+            message="Reference-guided scene render completed",
+            details={
+                "camera_angle": scene_params.get("camera_angle", "front"),
+                "movement_style": scene_params.get("movement_style", "slow_push"),
+            },
+        )
 
     from tools.blender_runner import run_blender_script_with_retry
+    state = await report_workflow_stage(
+        state,
+        tool="blender_generate_scene",
+        stage="render_scene_direct",
+        message="Rendering Blender scene from prompt",
+        details={},
+    )
 
     script_path = _ROOT / "blender_scripts" / "base_scene.py"
     output_path = state.get("output_path") or f"/tmp/blender_{uuid.uuid4().hex}.mp4"
@@ -109,7 +152,7 @@ async def _render_scene_node(state: SceneWorkflowState) -> SceneWorkflowState:
         result.get("frames"),
         result.get("resolution", "1920x1080"),
     )
-    return {
+    next_state = {
         **state,
         "output_path": output_path,
         "rendered_video_path": output_path,
@@ -121,6 +164,16 @@ async def _render_scene_node(state: SceneWorkflowState) -> SceneWorkflowState:
         },
         "error": "",
     }
+    return await report_workflow_stage(
+        next_state,
+        tool="blender_generate_scene",
+        stage="scene_render_complete",
+        message="Prompt-driven Blender scene render completed",
+        details={
+            "frames": next_state["result"].get("frames"),
+            "resolution": next_state["result"].get("resolution"),
+        },
+    )
 
 
 async def _qa_scene_node(state: SceneWorkflowState) -> SceneWorkflowState:
@@ -129,6 +182,14 @@ async def _qa_scene_node(state: SceneWorkflowState) -> SceneWorkflowState:
 
     if not state.get("reference_image_url"):
         return state
+
+    state = await report_workflow_stage(
+        state,
+        tool="blender_generate_scene",
+        stage="qa_scene",
+        message="Running visual QA against the reference image",
+        details={},
+    )
 
     reference_image_path = state.get("reference_image_path", "")
     rendered_video_path = state.get("rendered_video_path", "")
@@ -185,11 +246,23 @@ async def _qa_scene_node(state: SceneWorkflowState) -> SceneWorkflowState:
         qa_result.get("iterations", 0),
         qa_result.get("error", ""),
     )
-    return {
+    next_state = {
         **state,
         "final_video_path": qa_result.get("best_video_path", rendered_video_path),
         "error": qa_result.get("error", ""),
     }
+    return await report_workflow_stage(
+        next_state,
+        tool="blender_generate_scene",
+        stage="qa_complete",
+        message="Reference QA pass finished",
+        details={
+            "approved": qa_result.get("approved", False),
+            "iterations": qa_result.get("iterations", 0),
+            "best_score": float(qa_result.get("best_score", 0.0)),
+        },
+        job_state="failed" if qa_result.get("error") else "running",
+    )
 
 
 async def _upload_result_node(state: SceneWorkflowState) -> SceneWorkflowState:
@@ -197,6 +270,13 @@ async def _upload_result_node(state: SceneWorkflowState) -> SceneWorkflowState:
         return state
 
     from tools.storage import upload_render
+    state = await report_workflow_stage(
+        state,
+        tool="blender_generate_scene",
+        stage="upload_result",
+        message="Uploading rendered scene output",
+        details={},
+    )
 
     final_path = state.get("final_video_path") or state.get("rendered_video_path") or state.get("output_path", "")
     if not final_path or not os.path.exists(final_path):
@@ -221,6 +301,13 @@ async def _upload_result_node(state: SceneWorkflowState) -> SceneWorkflowState:
             try:
                 from tools.vibevoice import attach_narration_assets
 
+                state = await report_workflow_stage(
+                    state,
+                    tool="blender_generate_scene",
+                    stage="attach_narration",
+                    message="Generating and attaching VibeVoice narration",
+                    details={"speaker": state.get("narration_speaker") or "Emma"},
+                )
                 narration_assets = await attach_narration_assets(
                     video_path=final_path,
                     narration_text=narration_text,
@@ -247,7 +334,14 @@ async def _upload_result_node(state: SceneWorkflowState) -> SceneWorkflowState:
         workflow_persistence_mode(),
         video_url,
     )
-    return {**state, "result": result, "error": ""}
+    next_state = {**state, "result": result, "error": ""}
+    return await report_workflow_stage(
+        next_state,
+        tool="blender_generate_scene",
+        stage="upload_complete",
+        message="Scene output uploaded successfully",
+        details={"video_url": video_url},
+    )
 
 
 async def _cleanup_node(state: SceneWorkflowState) -> SceneWorkflowState:
@@ -319,6 +413,12 @@ async def run_scene_workflow(
         "scene_params": {},
         "result": {},
         "error": "",
+        "progress_stage": "queued",
+        "progress_message": "Scene workflow queued",
+        "progress_state": "pending",
+        "progress_details": {},
+        "progress_updated_at": "",
+        "progress_events": [],
     }
 
     final = await graph.ainvoke(initial, config=workflow_config(thread_id, "scene_workflow"))

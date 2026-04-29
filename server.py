@@ -62,6 +62,7 @@ from tools.render_tools import (
     impl_generate_geometry_scatter,
 )
 from tools.job_queue import queue as _job_queue
+from tools.progress_store import get_job_progress, get_job_progress_by_thread
 from tools.rate_limiter import limiter as _limiter
 
 load_dotenv()
@@ -1229,9 +1230,31 @@ async def rest_get_job(request: Request) -> JSONResponse:
 
     job_id = request.path_params.get("job_id", "")
     status = _job_queue.get(job_id)
-    if status is None:
+    progress = await get_job_progress(job_id)
+    if progress is None and status is not None and status.workflow_thread_id:
+        progress = await get_job_progress_by_thread(status.workflow_thread_id)
+
+    if status is None and progress is None:
         return JSONResponse({"error": f"Job '{job_id}' not found"}, status_code=404)
-    return JSONResponse(status.to_dict())
+
+    payload = status.to_dict() if status is not None else {
+        "job_id": progress["job_id"],
+        "tool": progress["tool"],
+        "workflow_thread_id": progress["workflow_thread_id"],
+        "state": progress["progress"]["state"],
+        "result": progress.get("result"),
+        "error": progress.get("error", ""),
+        "created_at": progress.get("created_at", ""),
+        "started_at": progress.get("started_at", ""),
+        "finished_at": progress.get("finished_at", ""),
+    }
+    if progress is not None:
+        payload["progress"] = progress["progress"]
+        payload["progress_events"] = progress["progress_events"]
+        payload["progress_persistence"] = "postgres"
+    else:
+        payload["progress_persistence"] = "memory"
+    return JSONResponse(payload)
 
 
 async def rest_list_jobs(request: Request) -> JSONResponse:

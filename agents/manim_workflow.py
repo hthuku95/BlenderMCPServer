@@ -16,6 +16,7 @@ from typing import Any, TypedDict
 from langgraph.graph import END, StateGraph
 
 from tools.workflow_runtime import get_checkpointer, workflow_config, workflow_persistence_mode
+from tools.progress_store import report_workflow_stage
 
 logger = logging.getLogger(__name__)
 _GRAPHS: dict[int, Any] = {}
@@ -36,6 +37,12 @@ class ManimWorkflowState(TypedDict):
     final_path: str
     result: dict
     error: str
+    progress_stage: str
+    progress_message: str
+    progress_state: str
+    progress_details: dict
+    progress_updated_at: str
+    progress_events: list[dict]
 
 
 async def _render_manim_node(state: ManimWorkflowState) -> ManimWorkflowState:
@@ -43,6 +50,17 @@ async def _render_manim_node(state: ManimWorkflowState) -> ManimWorkflowState:
         return state
 
     from tools.manim_codegen import generate_and_run_manim
+    state = await report_workflow_stage(
+        state,
+        tool="blender_generate_animation",
+        stage="render_manim",
+        message="Generating Manim animation from the prompt",
+        details={
+            "duration": state["duration"],
+            "background_style": state["background_style"],
+            "composite_over_scene": state.get("composite_over_scene", True),
+        },
+    )
 
     output_tmp = state.get("output_tmp") or f"/tmp/anim_{uuid.uuid4().hex}"
     if state.get("composite_over_scene", True):
@@ -72,7 +90,14 @@ async def _render_manim_node(state: ManimWorkflowState) -> ManimWorkflowState:
         state.get("composite_over_scene", True),
         workflow_persistence_mode(),
     )
-    return {**state, "output_tmp": output_tmp, "manim_path": manim_path, "final_path": manim_path, "error": ""}
+    next_state = {**state, "output_tmp": output_tmp, "manim_path": manim_path, "final_path": manim_path, "error": ""}
+    return await report_workflow_stage(
+        next_state,
+        tool="blender_generate_animation",
+        stage="manim_render_complete",
+        message="Manim animation render completed",
+        details={"manim_path": manim_path},
+    )
 
 
 async def _composite_node(state: ManimWorkflowState) -> ManimWorkflowState:
@@ -82,6 +107,13 @@ async def _composite_node(state: ManimWorkflowState) -> ManimWorkflowState:
     from tools.blender_runner import run_blender_script
     from tools.compositor import composite_manim_over_blender
     from pathlib import Path
+    state = await report_workflow_stage(
+        state,
+        tool="blender_generate_animation",
+        stage="render_background_scene",
+        message="Rendering Blender background scene for the animation",
+        details={},
+    )
 
     blender_script = str(Path(__file__).parent.parent / "blender_scripts" / "base_scene.py")
     blender_path = state.get("output_tmp", f"/tmp/anim_{uuid.uuid4().hex}") + "_bg.mp4"
@@ -107,6 +139,13 @@ async def _composite_node(state: ManimWorkflowState) -> ManimWorkflowState:
         return {**state, "composite_over_scene": False, "final_path": state.get("manim_path", ""), "error": ""}
 
     final_path = state.get("output_tmp", f"/tmp/anim_{uuid.uuid4().hex}") + ".mp4"
+    state = await report_workflow_stage(
+        state,
+        tool="blender_generate_animation",
+        stage="composite_animation",
+        message="Compositing Manim animation over Blender background",
+        details={"blender_path": blender_path},
+    )
     loop = asyncio.get_running_loop()
     final_path = await loop.run_in_executor(
         None,
@@ -126,12 +165,19 @@ async def _composite_node(state: ManimWorkflowState) -> ManimWorkflowState:
         state["workflow_thread_id"],
         blender_path,
     )
-    return {
+    next_state = {
         **state,
         "blender_path": blender_path,
         "final_path": final_path,
         "error": "",
     }
+    return await report_workflow_stage(
+        next_state,
+        tool="blender_generate_animation",
+        stage="composite_complete",
+        message="Animation compositing completed",
+        details={"final_path": final_path},
+    )
 
 
 async def _upload_node(state: ManimWorkflowState) -> ManimWorkflowState:
@@ -139,6 +185,13 @@ async def _upload_node(state: ManimWorkflowState) -> ManimWorkflowState:
         return state
 
     from tools.storage import upload_render
+    state = await report_workflow_stage(
+        state,
+        tool="blender_generate_animation",
+        stage="upload_output",
+        message="Uploading animation output",
+        details={},
+    )
 
     final_path = state.get("final_path", "")
     if not final_path or not os.path.exists(final_path):
@@ -156,6 +209,13 @@ async def _upload_node(state: ManimWorkflowState) -> ManimWorkflowState:
         try:
             from tools.vibevoice import attach_narration_assets
 
+            state = await report_workflow_stage(
+                state,
+                tool="blender_generate_animation",
+                stage="attach_narration",
+                message="Generating and attaching VibeVoice narration",
+                details={"speaker": state.get("narration_speaker") or "Emma"},
+            )
             result.update(
                 await attach_narration_assets(
                     video_path=final_path,
@@ -178,7 +238,14 @@ async def _upload_node(state: ManimWorkflowState) -> ManimWorkflowState:
             )
             result["narration_error"] = str(exc)
 
-    return {**state, "result": result, "error": ""}
+    next_state = {**state, "result": result, "error": ""}
+    return await report_workflow_stage(
+        next_state,
+        tool="blender_generate_animation",
+        stage="upload_complete",
+        message="Animation output uploaded successfully",
+        details={"video_url": video_url},
+    )
 
 
 async def _cleanup_node(state: ManimWorkflowState) -> ManimWorkflowState:
@@ -243,6 +310,12 @@ async def run_manim_workflow(
         "final_path": "",
         "result": {},
         "error": "",
+        "progress_stage": "queued",
+        "progress_message": "Animation workflow queued",
+        "progress_state": "pending",
+        "progress_details": {},
+        "progress_updated_at": "",
+        "progress_events": [],
     }
     final = await graph.ainvoke(initial, config=workflow_config(thread_id, "manim_workflow"))
     if final.get("error"):

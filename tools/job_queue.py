@@ -26,6 +26,8 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Callable, Coroutine
 
+from tools.progress_store import record_job_progress
+
 
 class State(str, Enum):
     PENDING   = "pending"
@@ -102,6 +104,17 @@ class JobQueue:
 
         # Store args alongside job so worker can retrieve them
         self._jobs[job_id]._args = normalized_args  # type: ignore[attr-defined]
+        await record_job_progress(
+            job_id=job_id,
+            workflow_thread_id=workflow_thread_id,
+            tool=tool_name,
+            state=State.PENDING.value,
+            stage="queued",
+            message=f"Queued {tool_name} job",
+            details={
+                "arg_keys": sorted(normalized_args.keys()),
+            },
+        )
         await self._pending.put(job_id)
         return job_id
 
@@ -132,11 +145,32 @@ class JobQueue:
             status.state = State.RUNNING
             status.started_at = _now()
             status.result = None  # clear the temp args
+            await record_job_progress(
+                job_id=status.job_id,
+                workflow_thread_id=status.workflow_thread_id or status.job_id,
+                tool=status.tool,
+                state=State.RUNNING.value,
+                stage="dispatch",
+                message=f"Dispatching {status.tool} handler",
+                details={},
+                started_at=datetime.now(timezone.utc),
+            )
 
             if handler is None:
                 status.state = State.FAILED
                 status.error = f"No handler registered for tool '{status.tool}'"
                 status.finished_at = _now()
+                await record_job_progress(
+                    job_id=status.job_id,
+                    workflow_thread_id=status.workflow_thread_id or status.job_id,
+                    tool=status.tool,
+                    state=State.FAILED.value,
+                    stage="dispatch_failed",
+                    message=status.error,
+                    details={},
+                    error=status.error,
+                    finished_at=datetime.now(timezone.utc),
+                )
                 self._pending.task_done()
                 continue
 
@@ -150,12 +184,45 @@ class JobQueue:
                 result = await asyncio.wait_for(handler(**args), timeout=_JOB_TIMEOUT)
                 status.state = State.COMPLETED
                 status.result = result
+                await record_job_progress(
+                    job_id=status.job_id,
+                    workflow_thread_id=status.workflow_thread_id or status.job_id,
+                    tool=status.tool,
+                    state=State.COMPLETED.value,
+                    stage="completed",
+                    message=f"{status.tool} job completed",
+                    details={},
+                    result=result,
+                    finished_at=datetime.now(timezone.utc),
+                )
             except asyncio.TimeoutError:
                 status.state = State.FAILED
                 status.error = f"Job exceeded maximum runtime of {_JOB_TIMEOUT}s"
+                await record_job_progress(
+                    job_id=status.job_id,
+                    workflow_thread_id=status.workflow_thread_id or status.job_id,
+                    tool=status.tool,
+                    state=State.FAILED.value,
+                    stage="timeout",
+                    message=status.error,
+                    details={"timeout_seconds": _JOB_TIMEOUT},
+                    error=status.error,
+                    finished_at=datetime.now(timezone.utc),
+                )
             except Exception as exc:
                 status.state = State.FAILED
                 status.error = str(exc)
+                await record_job_progress(
+                    job_id=status.job_id,
+                    workflow_thread_id=status.workflow_thread_id or status.job_id,
+                    tool=status.tool,
+                    state=State.FAILED.value,
+                    stage="failed",
+                    message=str(exc),
+                    details={"exception_type": type(exc).__name__},
+                    error=status.error,
+                    finished_at=datetime.now(timezone.utc),
+                )
             finally:
                 status.finished_at = _now()
                 self._pending.task_done()

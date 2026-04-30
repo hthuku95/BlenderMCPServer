@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import asyncio
 import os
 import tempfile
 from pathlib import Path
@@ -34,10 +35,34 @@ async def synthesize_speech_to_file(
         "metadata": metadata or {},
     }
 
-    async with httpx.AsyncClient(timeout=300.0, follow_redirects=True) as client:
-        response = await client.post(f"{service_url}/api/tts/base64", json=payload)
-        response.raise_for_status()
-        result = response.json()
+    timeout = httpx.Timeout(connect=30.0, read=900.0, write=30.0, pool=30.0)
+    last_error: Exception | None = None
+    async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+        for attempt in range(1, 4):
+            try:
+                response = await client.post(f"{service_url}/api/tts/base64", json=payload)
+                response.raise_for_status()
+                result = response.json()
+                break
+            except httpx.HTTPStatusError as exc:
+                detail = exc.response.text.strip()
+                if exc.response.status_code >= 500 and attempt < 3:
+                    last_error = RuntimeError(
+                        f"VibeVoice TTS attempt {attempt} failed with {exc.response.status_code}: {detail}"
+                    )
+                    await asyncio.sleep(2 * attempt)
+                    continue
+                raise RuntimeError(
+                    f"VibeVoice TTS request failed with {exc.response.status_code}: {detail}"
+                ) from exc
+            except httpx.RequestError as exc:
+                if attempt < 3:
+                    last_error = exc
+                    await asyncio.sleep(2 * attempt)
+                    continue
+                raise RuntimeError(f"VibeVoice TTS request error: {exc}") from exc
+        else:
+            raise RuntimeError(f"VibeVoice TTS failed after retries: {last_error}")
 
     audio_base64 = result.get("audio_base64")
     if not audio_base64:

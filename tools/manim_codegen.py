@@ -37,6 +37,54 @@ from pathlib import Path
 from typing import Optional
 
 
+_WEB_SEARCH_RE = re.compile(r"WEB_SEARCH:\s*(.+?)(?:\n|$)", re.IGNORECASE)
+
+
+# ---------------------------------------------------------------------------
+# Web search for LLM debugging
+# ---------------------------------------------------------------------------
+
+async def _web_search(query: str, num_results: int = 5) -> str:
+    """Search the web via DuckDuckGo and return text snippet results."""
+    try:
+        import httpx
+        url = "https://html.duckduckgo.com/html/"
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.post(url, data={"q": query}, follow_redirects=True)
+            resp.raise_for_status()
+        results = []
+        for match in re.finditer(
+            r'class="result__snippet"[^>]*>(.*?)</(?:a|span|td)>',
+            resp.text,
+            re.DOTALL,
+        ):
+            snippet = re.sub(r"<[^>]+>", "", match.group(1)).strip()
+            if snippet:
+                results.append(snippet)
+            if len(results) >= num_results:
+                break
+        if not results:
+            return f"No results found for: {query}"
+        return "\n".join(f"• {r}" for r in results)
+    except Exception as exc:
+        return f"Web search failed: {exc}"
+
+
+async def _execute_web_search(text: str) -> str:
+    """Check if the LLM response contains WEB_SEARCH markers and execute them."""
+    results = []
+    for match in _WEB_SEARCH_RE.finditer(text):
+        query = match.group(1).strip()
+        result = await _web_search(query)
+        results.append(f"Search query: {query}\nResults:\n{result}")
+    return "\n\n".join(results)
+
+
+def _strip_web_search_markers(text: str) -> str:
+    """Remove WEB_SEARCH markers from the response."""
+    return _WEB_SEARCH_RE.sub("", text).strip()
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Constants
 # ──────────────────────────────────────────────────────────────────────────────
@@ -184,6 +232,16 @@ _SYSTEM_PROMPT_TEMPLATE = textwrap.dedent("""\
     ═══ FEW-SHOT EXAMPLES (these patterns are known to work) ═══
     {examples}
 
+    ═══ ERROR FIXING ═══
+    If you are not sure about the correct Manim API to use, you can search the web
+    by including the following marker in your response:
+        WEB_SEARCH: <natural language query about Manim API>
+
+    Example:
+        WEB_SEARCH: manim how to create a 3d rotating cube
+
+    The search results will be provided to you before the next attempt.
+
     ═══ YOUR TASK ═══
     {description}
 
@@ -269,14 +327,18 @@ async def _generate_code(description: str, duration: float, background: str) -> 
     return _extract_code(raw)
 
 
-async def _fix_code(code: str, error: str, description: str, duration: float, background: str) -> str:
+async def _fix_code(code: str, error: str, description: str, duration: float, background: str, search_results: str = "") -> str:
     """Ask the LLM to fix failing code given the execution error."""
+    search_section = ""
+    if search_results:
+        search_section = f"\n═══ WEB SEARCH RESULTS ═══\n{search_results}\n"
+
     prompt = textwrap.dedent(f"""\
         The following ManimCE v0.20.x Python code failed to execute.
 
         ═══ ORIGINAL TASK ═══
         {description}
-
+        {search_section}
         ═══ FAILING CODE ═══
         ```python
         {code}
@@ -290,6 +352,9 @@ async def _fix_code(code: str, error: str, description: str, duration: float, ba
         • Keep the overall animation intent the same.
         • The class must still be named `{SCENE_CLASS_NAME}`.
         • Do NOT use deprecated APIs (ShowCreation, TextMobject, etc.).
+        • If unsure about the correct Manim API, include:
+            WEB_SEARCH: <query about the correct API>
+          in your response. Search results will be provided on the next attempt.
         • If the error mentions a missing attribute or wrong argument, simplify
           rather than guess — use a simpler animation that is guaranteed to work.
         • Target duration: ~{duration:.1f} seconds.
@@ -336,13 +401,19 @@ async def generate_and_run_manim(
 
     code: str = ""
     last_error: str = ""
+    search_results: str = ""
 
     for attempt in range(1, MAX_RETRIES + 1):
         # ── generate / fix ────────────────────────────────────────────────────
         if attempt == 1:
             code = await _generate_code(description, duration, background)
         else:
-            code = await _fix_code(code, last_error, description, duration, background)
+            code = await _fix_code(code, last_error, description, duration, background, search_results)
+
+        # ── check for web search markers ──────────────────────────────────────
+        search_results = await _execute_web_search(code)
+        if search_results:
+            code = _strip_web_search_markers(code)
 
         # ── static validate ───────────────────────────────────────────────────
         static_err = _static_validate(code)

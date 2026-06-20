@@ -176,6 +176,99 @@ async def blender_execute_bpy_script(
 
 
 @mcp.tool()
+async def manim_execute_script(
+    description: str,
+    duration: float = 10.0,
+    background: str = "dark",
+    transparent: bool = False,
+    quality: str = "m",
+    include_narration: bool = False,
+    narration_text: str = "",
+    narration_speaker: str = "Emma",
+) -> str:
+    """
+    Generate ANY Manim animation from a natural language description.
+
+    Unlike the old template-based tools (which required pre-written scene files
+    for each animation type), this tool uses LLM code generation to dynamically
+    write and execute arbitrary Manim Python code — covering 100% of Manim's API:
+    animations, 3D scenes, graphs, LaTeX, geometry, network graphs, timelines,
+    code syntax highlighting, and more.
+
+    The LLM writes the Manim scene class from scratch based on your description,
+    validates it, renders it with ManimCE, and retries automatically on failure
+    (up to 5 attempts).
+
+    This REPLACES all old template-based blender_generate_* Manim tools in a single
+    unified tool. Use this for ALL Manim-based animation needs.
+
+    Args:
+        description: Natural language description of the desired animation.
+                     Be specific about: scene content, objects, colors, transforms,
+                     camera angles, text content, mathematical expressions.
+        duration: Target clip duration in seconds (default 10)
+        background: Background style — "dark" | "light" | "transparent"
+        transparent: If True, render with alpha channel (ProRes .mov)
+        quality: Manim quality — "l" (480p) | "m" (720p) | "h" (1080p)
+        include_narration: If true, generate and attach VibeVoice narration
+        narration_text: Custom narration text (auto-generated from prompt if empty)
+        narration_speaker: VibeVoice speaker name (default "Emma")
+
+    Returns JSON: {"video_url": str, "duration": float, "resolution": str, "frames": int}
+    """
+    from tools.manim_codegen import generate_and_run_manim
+    from tools.storage import upload_render
+    import uuid
+
+    ext = ".mov" if transparent else ".mp4"
+    output_path = f"/tmp/manim_scene_{uuid.uuid4().hex}{ext}"
+
+    result_path = await generate_and_run_manim(
+        description=description,
+        duration=duration,
+        background=background,
+        output_path=output_path,
+        transparent=transparent,
+        quality=quality,
+    )
+
+    video_url = upload_render(result_path, prefix="scenes")
+    try:
+        os.unlink(result_path)
+    except OSError:
+        pass
+
+    quality_map = {"l": "854x480", "m": "1280x720", "h": "1920x1080"}
+    res = quality_map.get(quality, "1920x1080")
+
+    response = {
+        "video_url": video_url,
+        "duration": duration,
+        "resolution": res,
+        "frames": int(duration * 30),
+        "generation": "llm_dynamic_manim",
+    }
+
+    if include_narration:
+        try:
+            from tools.vibevoice import attach_narration_assets
+            fallback_text = narration_text or description
+            response.update(
+                await attach_narration_assets(
+                    video_path=result_path,
+                    narration_text=fallback_text.strip(),
+                    speaker=narration_speaker,
+                    prefix="scenes",
+                    metadata={"tool": "manim_execute_script", "background": background},
+                )
+            )
+        except Exception as exc:
+            response["narration_error"] = str(exc)
+
+    return json.dumps(response)
+
+
+@mcp.tool()
 async def blender_generate_scene(
     prompt: str,
     duration: float = 10.0,
@@ -1172,6 +1265,7 @@ async def web_search(query: str) -> str:
 
 TOOL_HANDLERS = {
     "blender_execute_bpy_script":     None,  # handled directly in rest_call_tool
+    "manim_execute_script":           None,  # handled directly in rest_call_tool
     "web_search":                     None,  # handled directly in rest_call_tool
     "blender_generate_scene":         impl_generate_scene,
     "blender_generate_thumbnail":     impl_generate_thumbnail,
@@ -1262,6 +1356,8 @@ async def rest_call_tool(request: Request) -> JSONResponse:
         if tool_name == "blender_execute_bpy_script":
             # Route through the MCP tool handler directly
             result = await blender_execute_bpy_script(**args)
+        elif tool_name == "manim_execute_script":
+            result = await manim_execute_script(**args)
         elif tool_name == "web_search":
             from tools.bpy_codegen import web_search as _ws
             result = await _ws(args.get("query", ""))

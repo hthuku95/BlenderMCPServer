@@ -1,8 +1,13 @@
 """
-LangGraph Director Agent — Phase 2
+LangGraph Director Agent — Phase 2 (Consolidated Tools)
 
-Takes a high-level creative brief and orchestrates the 6 BlenderMCPServer tools
-to produce a list of video/image asset URLs ready for use in auto_generate_video.
+Takes a high-level creative brief and orchestrates 2 consolidated tools
+(blender_execute_bpy_script + manim_execute_script) to produce a list of
+video/image asset URLs ready for use in auto_generate_video.
+
+Previously used 7 individual template-based tools. Now uses LLM-driven code
+generation via the consolidated tools — covering 100% of Blender's bpy API
+and 100% of Manim's API.
 
 Provider: controlled by LLM_PROVIDER env var (see tools/llm_client.py).
   "auto"    — Gemini primary, Claude fallback  (default)
@@ -21,7 +26,6 @@ Usage:
 """
 
 import json
-import os
 from typing import Annotated, TypedDict
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
@@ -30,144 +34,89 @@ from langgraph.graph import END, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
 
-from tools.render_tools import (
-    impl_generate_data_viz,
-    impl_generate_latex,
-    impl_generate_lower_third,
-    impl_generate_scene,
-    impl_generate_thumbnail,
-    impl_generate_title_card,
-    impl_generate_ui_mockup,
-)
 from tools.llm_client import get_chat_model, active_provider
 
 # ---------------------------------------------------------------------------
-# LangChain tool wrappers (thin async wrappers over the shared impls)
+# LangChain tool wrappers (calls the consolidated MCP tools)
 # ---------------------------------------------------------------------------
 
 @tool
-async def blender_generate_scene(
+async def blender_execute_bpy_script(
     prompt: str,
     duration: float = 10.0,
     style: str = "cinematic",
+    reference_image_url: str = "",
+    include_narration: bool = False,
+    narration_text: str = "",
+    narration_speaker: str = "Emma",
 ) -> str:
-    """Generate a procedural 3D Blender scene as an MP4 clip.
-    Returns JSON: {"video_url": str, "duration": float, "resolution": str}"""
-    return json.dumps(await impl_generate_scene(prompt, duration, style))
-
-
-@tool
-async def blender_generate_thumbnail(
-    prompt: str,
-    title_text: str = "",
-    style: str = "youtube",
-) -> str:
-    """Generate a 3D rendered YouTube thumbnail image (1280×720 PNG).
-    Returns JSON: {"image_url": str, "width": int, "height": int}"""
-    return json.dumps(await impl_generate_thumbnail(prompt, title_text, style))
-
-
-@tool
-async def blender_generate_title_card(
-    title: str,
-    subtitle: str = "",
-    duration: float = 5.0,
-    style: str = "cinematic",
-) -> str:
-    """Generate an animated 3D title card as an MP4 clip.
-    Returns JSON: {"video_url": str, "duration": float}"""
-    return json.dumps(await impl_generate_title_card(title, subtitle, duration, style))
-
-
-@tool
-async def blender_generate_data_viz(
-    data_json: str,
-    chart_type: str = "bar",
-    title: str = "",
-    duration: float = 10.0,
-) -> str:
-    """Generate an animated 3D data visualisation clip from JSON data.
-    data_json format: '[{"label":"A","value":42},...]'
-    Returns JSON: {"video_url": str, "duration": float, "chart_type": str}"""
-    return json.dumps(await impl_generate_data_viz(data_json, chart_type, title, duration))
-
-
-@tool
-async def blender_generate_lower_third(
-    name_text: str,
-    subtitle_text: str = "",
-    style: str = "modern",
-    duration: float = 5.0,
-) -> str:
-    """Generate an animated lower-third name plate clip (green-screen background for keying).
-    Returns JSON: {"video_url": str, "duration": float, "keying": "green_screen"}"""
-    return json.dumps(await impl_generate_lower_third(name_text, subtitle_text, style, duration))
-
-
-@tool
-async def blender_generate_latex(
-    latex_expression: str,
-    animation_type: str = "appear",
-    duration: float = 8.0,
-    background_style: str = "dark",
-) -> str:
-    r"""Generate a LaTeX/Manim math equation animation clip.
-    animation_type: "appear" | "morph" | "step_by_step"
-    Returns JSON: {"video_url": str, "duration": float, "latex_expression": str}"""
-    return json.dumps(await impl_generate_latex(latex_expression, animation_type, duration, background_style))
-
-
-@tool
-async def blender_generate_ui_mockup(
-    device: str = "iphone",
-    animation: str = "reveal",
-    duration: float = 6.0,
-    screenshot_url: str = "",
-    screenshot_spec: str = "",
-    background_color: str = "",
-    accent_color: str = "",
-) -> str:
-    """Render a screenshot/image inside a 3D device frame (iPhone, MacBook, browser, iPad).
-
-    Args:
-        device: "iphone" | "macbook" | "browser" | "ipad"
-        animation: "static" (PNG) | "reveal" (fade-in) | "scroll" (vertical scroll) | "tilt" (product reveal)
-        duration: Clip length in seconds (ignored for static)
-        screenshot_url: URL of the screenshot image to place inside the device screen
-        screenshot_spec: JSON string of a design spec to auto-generate a screenshot
-                         (if screenshot_url is empty). Schema: {"type":"browser"|"app",
-                         "url":str, "title":str, "body":str, "bg_color":str, "accent_color":str}
-        background_color: Optional JSON RGB array e.g. "[0.05, 0.05, 0.08]"
-        accent_color: Optional JSON RGB array e.g. "[0.3, 0.5, 1.0]"
-
-    Returns JSON: {"video_url": str, "device": str, "animation": str, "duration": float}
-               or {"image_url": str, "device": str, "animation": "static"}
     """
-    import json as _json
+    Generate ANY 3D Blender scene, thumbnail, title card, lower-third,
+    or UI device mockup from a natural language description.
 
-    spec = _json.loads(screenshot_spec) if screenshot_spec else None
-    bg   = _json.loads(background_color) if background_color else None
-    acc  = _json.loads(accent_color)     if accent_color else None
+    Uses LLM code generation to dynamically write and execute arbitrary
+    bpy Python code — covers 100% of Blender's API: geometry nodes,
+    physics, character rigging, custom shaders, particle systems,
+    Grease Pencil, camera motion, and more.
 
-    return _json.dumps(await impl_generate_ui_mockup(
-        device=device,
-        animation=animation,
+    Tip: For thumbnails ask for a "1280x720 PNG thumbnail frame".
+         For lower-thirds mention "green screen background".
+         For device mockups mention the device type (iPhone, MacBook).
+
+    Returns JSON: {"video_url": str, "duration": float, "resolution": str, "frames": int}
+    """
+    from server import blender_execute_bpy_script as _mcp_impl
+    return await _mcp_impl(
+        prompt=prompt,
         duration=duration,
-        screenshot_url=screenshot_url,
-        screenshot_spec=spec,
-        background_color=bg,
-        accent_color=acc,
-    ))
+        style=style,
+        reference_image_url=reference_image_url,
+        include_narration=include_narration,
+        narration_text=narration_text,
+        narration_speaker=narration_speaker,
+    )
+
+
+@tool
+async def manim_execute_script(
+    description: str,
+    duration: float = 10.0,
+    background: str = "dark",
+    transparent: bool = False,
+    quality: str = "m",
+    include_narration: bool = False,
+    narration_text: str = "",
+    narration_speaker: str = "Emma",
+) -> str:
+    """
+    Generate ANY Manim animation from a natural language description.
+
+    Uses LLM code generation to dynamically write and execute arbitrary
+    Manim Python code — covers 100% of Manim's API: animations, 3D scenes,
+    graphs, LaTeX math, geometry proofs, network graphs, timelines, code
+    syntax highlighting, vector fields, matrix transforms, and more.
+
+    Tip: For math equations describe the expression in LaTeX-like terms.
+         For charts mention the type (bar, line, pie, scatter).
+
+    Returns JSON: {"video_url": str, "duration": float, "resolution": str, "frames": int}
+    """
+    from server import manim_execute_script as _mcp_impl
+    return await _mcp_impl(
+        description=description,
+        duration=duration,
+        background=background,
+        transparent=transparent,
+        quality=quality,
+        include_narration=include_narration,
+        narration_text=narration_text,
+        narration_speaker=narration_speaker,
+    )
 
 
 TOOLS = [
-    blender_generate_scene,
-    blender_generate_thumbnail,
-    blender_generate_title_card,
-    blender_generate_data_viz,
-    blender_generate_lower_third,
-    blender_generate_latex,
-    blender_generate_ui_mockup,
+    blender_execute_bpy_script,
+    manim_execute_script,
 ]
 
 # ---------------------------------------------------------------------------
@@ -185,8 +134,14 @@ class DirectorState(TypedDict):
 # ---------------------------------------------------------------------------
 
 _SYSTEM = (
-    "You are a professional video production director AI with access to 7 tools that generate "
-    "3D Blender animations, Manim math animations, and device UI mockups. "
+    "You are a professional video production director AI with access to 2 consolidated tools "
+    "that cover ALL 3D Blender rendering and ALL Manim animations:\n\n"
+    "1. blender_execute_bpy_script — for EVERYTHING 3D/Blender: scenes, thumbnails, title cards, "
+    "lower-thirds, UI device mockups, logo reveals, particle effects, abstract backgrounds, "
+    "countdowns, camera fly-throughs, toon scenes, grease pencil, geometry scattering, etc.\n"
+    "2. manim_execute_script — for EVERYTHING Manim: math equations, data charts (bar/line/pie/scatter), "
+    "flowcharts, 3D math, code animations, timelines, network graphs, text animations, "
+    "vector fields, matrix transforms, polar graphs, geometry proofs, etc.\n\n"
     "Given a creative brief, decide which tools to call and with what parameters to produce "
     "the best asset package. Call tools in a logical sequence — title cards before scenes, "
     "lower-thirds with the host's name when mentioned, thumbnails when the channel is mentioned, "

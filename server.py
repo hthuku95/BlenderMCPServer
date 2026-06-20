@@ -85,6 +85,7 @@ mcp = FastMCP(
 )
 
 
+
 @mcp.tool()
 async def blender_execute_bpy_script(
     prompt: str,
@@ -173,6 +174,7 @@ async def blender_execute_bpy_script(
             response["narration_error"] = str(exc)
 
     return json.dumps(response)
+
 
 
 @mcp.tool()
@@ -268,7 +270,11 @@ async def manim_execute_script(
     return json.dumps(response)
 
 
-@mcp.tool()
+# ---------------------------------------------------------------------------
+# DEPRECATED — kept for REST backward compatibility (TOOL_HANDLERS)
+# Use blender_execute_bpy_script or manim_execute_script instead.
+# ---------------------------------------------------------------------------
+
 async def blender_generate_scene(
     prompt: str,
     duration: float = 10.0,
@@ -278,32 +284,12 @@ async def blender_generate_scene(
     narration_text: str = "",
     narration_speaker: str = "Emma",
 ) -> str:
-    """
-    [DEPRECATED] Use blender_execute_bpy_script instead — it covers 100% of
-    Blender's API via LLM code generation instead of fixed templates.
-
-    Generate a procedural 3D Blender scene as an MP4 clip.
-
-    Args:
-        prompt: Natural language description of the scene
-        duration: Target clip duration in seconds (default 10)
-        style: Visual style — "cinematic", "minimal", "energetic", or "calm"
-        reference_image_url: Optional URL of a reference/inspiration image
-
-    Returns JSON: {"video_url": str, "duration": float, "resolution": str, "frames": int}
-    """
     return json.dumps(await impl_generate_scene(
-        prompt,
-        duration,
-        style,
-        reference_image_url,
-        include_narration,
-        narration_text,
-        narration_speaker,
+        prompt, duration, style, reference_image_url,
+        include_narration, narration_text, narration_speaker,
     ))
 
 
-@mcp.tool()
 async def blender_generate_thumbnail(
     prompt: str,
     title_text: str = "",
@@ -322,7 +308,6 @@ async def blender_generate_thumbnail(
     return json.dumps(await impl_generate_thumbnail(prompt, title_text, style))
 
 
-@mcp.tool()
 async def blender_generate_title_card(
     title: str,
     subtitle: str = "",
@@ -343,7 +328,7 @@ async def blender_generate_title_card(
     return json.dumps(await impl_generate_title_card(title, subtitle, duration, style))
 
 
-@mcp.tool()
+
 async def blender_generate_data_viz(
     data_json: str,
     chart_type: str = "bar",
@@ -364,7 +349,7 @@ async def blender_generate_data_viz(
     return json.dumps(await impl_generate_data_viz(data_json, chart_type, title, duration))
 
 
-@mcp.tool()
+
 async def blender_generate_lower_third(
     name_text: str,
     subtitle_text: str = "",
@@ -385,7 +370,7 @@ async def blender_generate_lower_third(
     return json.dumps(await impl_generate_lower_third(name_text, subtitle_text, style, duration))
 
 
-@mcp.tool()
+
 async def blender_generate_ui_mockup(
     device: str = "iphone",
     animation: str = "reveal",
@@ -427,7 +412,7 @@ async def blender_generate_ui_mockup(
     ))
 
 
-@mcp.tool()
+
 async def blender_generate_latex(
     latex_expression: str,
     animation_type: str = "appear",
@@ -468,7 +453,7 @@ async def blender_generate_latex(
     ))
 
 
-@mcp.tool()
+
 async def blender_generate_animation(
     description: str,
     duration: float = 10.0,
@@ -516,7 +501,7 @@ async def blender_generate_animation(
     ))
 
 
-@mcp.tool()
+
 async def blender_generate_chart(
     chart_type: str = "bar_chart",
     title: str = "Data Visualisation",
@@ -562,7 +547,7 @@ async def blender_generate_chart(
     ))
 
 
-@mcp.tool()
+
 async def blender_generate_flowchart(
     nodes: str = "[]",
     edges: str = "[]",
@@ -601,7 +586,7 @@ async def blender_generate_flowchart(
     ))
 
 
-@mcp.tool()
+
 async def blender_generate_3d_math(
     scene_type: str = "surface",
     title: str = "3D Mathematics",
@@ -636,7 +621,7 @@ async def blender_generate_3d_math(
     ))
 
 
-@mcp.tool()
+
 async def blender_generate_code_animation(
     code: str = "",
     language: str = "python",
@@ -678,7 +663,7 @@ async def blender_generate_code_animation(
     ))
 
 
-@mcp.tool()
+
 async def blender_generate_timeline(
     events: str = "[]",
     title: str = "Project Timeline",
@@ -716,7 +701,7 @@ async def blender_generate_timeline(
     ))
 
 
-@mcp.tool()
+
 async def blender_generate_network_graph(
     nodes: str = "[]",
     edges: str = "[]",
@@ -755,7 +740,7 @@ async def blender_generate_network_graph(
     ))
 
 
-@mcp.tool()
+
 async def blender_generate_logo_reveal(
     text: str = "BRAND",
     tagline: str = "",
@@ -785,7 +770,7 @@ async def blender_generate_logo_reveal(
     ))
 
 
-@mcp.tool()
+
 async def blender_generate_abstract_bg(
     style: str = "geometric",
     primary_color: str = "[0.05, 0.2, 0.8, 1.0]",
@@ -813,7 +798,7 @@ async def blender_generate_abstract_bg(
     ))
 
 
-@mcp.tool()
+
 async def blender_generate_countdown(
     start_number: int = 5,
     end_number: int = 1,
@@ -846,7 +831,7 @@ async def blender_generate_countdown(
     ))
 
 
-@mcp.tool()
+
 async def blender_generate_text_animation(
     text: str = "Make it Count",
     subtitle: str = "",
@@ -889,7 +874,7 @@ async def blender_generate_text_animation(
     ))
 
 
-@mcp.tool()
+
 async def blender_generate_vector_field(
     field_type: str = "rotation",
     title: str = "Vector Field",
@@ -926,7 +911,7 @@ async def blender_generate_vector_field(
     ))
 
 
-@mcp.tool()
+
 async def blender_generate_matrix_transform(
     matrix: str = "[[0,-1],[1,0]]",
     title: str = "Linear Transformation",
@@ -962,7 +947,7 @@ async def blender_generate_matrix_transform(
     ))
 
 
-@mcp.tool()
+
 async def blender_generate_polar_graph(
     plane_type: str = "polar",
     title: str = "Polar Graph",
@@ -1003,7 +988,7 @@ async def blender_generate_polar_graph(
     ))
 
 
-@mcp.tool()
+
 async def blender_generate_geometry_proof(
     proof_type: str = "pythagorean",
     title: str = "Geometry Proof",
@@ -1042,7 +1027,7 @@ async def blender_generate_geometry_proof(
     ))
 
 
-@mcp.tool()
+
 async def blender_generate_particle_confetti(
     style: str = "confetti",
     count: int = 400,
@@ -1072,7 +1057,7 @@ async def blender_generate_particle_confetti(
     return _j.dumps(await impl_generate_particle_confetti(**kwargs))
 
 
-@mcp.tool()
+
 async def blender_generate_rigid_body_drop(
     text: str = "DROP",
     object_type: str = "text",
@@ -1104,7 +1089,7 @@ async def blender_generate_rigid_body_drop(
     return _j.dumps(await impl_generate_rigid_body_drop(**kwargs))
 
 
-@mcp.tool()
+
 async def blender_generate_camera_path(
     path_type: str = "orbit",
     subject: str = "abstract",
@@ -1136,7 +1121,7 @@ async def blender_generate_camera_path(
     return _j.dumps(await impl_generate_camera_path(**kwargs))
 
 
-@mcp.tool()
+
 async def blender_generate_toon_scene(
     subject: str = "abstract",
     title: str = "",
@@ -1173,7 +1158,7 @@ async def blender_generate_toon_scene(
     return _j.dumps(await impl_generate_toon_scene(**kwargs))
 
 
-@mcp.tool()
+
 async def blender_generate_grease_pencil_reveal(
     text: str = "HELLO",
     style: str = "whiteboard",
@@ -1203,7 +1188,7 @@ async def blender_generate_grease_pencil_reveal(
     return _j.dumps(await impl_generate_grease_pencil_reveal(**kwargs))
 
 
-@mcp.tool()
+
 async def blender_generate_geometry_scatter(
     instance_type: str = "spheres",
     surface: str = "plane",
@@ -1243,6 +1228,7 @@ async def blender_generate_geometry_scatter(
 # ---------------------------------------------------------------------------
 # Web Search tool for LLM debugging pipeline
 # ---------------------------------------------------------------------------
+
 
 @mcp.tool()
 async def web_search(query: str) -> str:

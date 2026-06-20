@@ -26,6 +26,8 @@ Usage:
 """
 
 import json
+import os
+import uuid
 from typing import Annotated, TypedDict
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
@@ -37,7 +39,7 @@ from langgraph.prebuilt import ToolNode
 from tools.llm_client import get_chat_model, active_provider
 
 # ---------------------------------------------------------------------------
-# LangChain tool wrappers (calls the consolidated MCP tools)
+# LangChain tool wrappers (calls the consolidated codegen directly)
 # ---------------------------------------------------------------------------
 
 @tool
@@ -65,16 +67,38 @@ async def blender_execute_bpy_script(
 
     Returns JSON: {"video_url": str, "duration": float, "resolution": str, "frames": int}
     """
-    from server import blender_execute_bpy_script as _mcp_impl
-    return await _mcp_impl(
-        prompt=prompt,
-        duration=duration,
-        style=style,
-        reference_image_url=reference_image_url,
-        include_narration=include_narration,
-        narration_text=narration_text,
-        narration_speaker=narration_speaker,
+    from tools.bpy_codegen import generate_and_run_bpy
+    from tools.storage import upload_render
+
+    output_path = f"/tmp/bpy_scene_{uuid.uuid4().hex}.mp4"
+    result_path = await generate_and_run_bpy(
+        prompt=prompt, duration=duration, style=style,
+        output_path=output_path, reference_image_url=reference_image_url,
     )
+    video_url = upload_render(result_path, prefix="scenes")
+    try:
+        os.unlink(result_path)
+    except OSError:
+        pass
+    response = {
+        "video_url": video_url, "duration": duration,
+        "resolution": "1920x1080", "frames": int(duration * 60),
+        "generation": "llm_dynamic_bpy",
+    }
+    if include_narration:
+        try:
+            from tools.vibevoice import attach_narration_assets
+            fallback_text = narration_text or prompt
+            response.update(
+                await attach_narration_assets(
+                    video_path=result_path, narration_text=fallback_text.strip(),
+                    speaker=narration_speaker, prefix="scenes",
+                    metadata={"tool": "blender_execute_bpy_script", "style": style},
+                )
+            )
+        except Exception as exc:
+            response["narration_error"] = str(exc)
+    return json.dumps(response)
 
 
 @tool
@@ -101,17 +125,41 @@ async def manim_execute_script(
 
     Returns JSON: {"video_url": str, "duration": float, "resolution": str, "frames": int}
     """
-    from server import manim_execute_script as _mcp_impl
-    return await _mcp_impl(
-        description=description,
-        duration=duration,
-        background=background,
-        transparent=transparent,
-        quality=quality,
-        include_narration=include_narration,
-        narration_text=narration_text,
-        narration_speaker=narration_speaker,
+    from tools.manim_codegen import generate_and_run_manim
+    from tools.storage import upload_render
+
+    ext = ".mov" if transparent else ".mp4"
+    output_path = f"/tmp/manim_scene_{uuid.uuid4().hex}{ext}"
+    result_path = await generate_and_run_manim(
+        description=description, duration=duration, background=background,
+        output_path=output_path, transparent=transparent, quality=quality,
     )
+    video_url = upload_render(result_path, prefix="scenes")
+    try:
+        os.unlink(result_path)
+    except OSError:
+        pass
+    quality_map = {"l": "854x480", "m": "1280x720", "h": "1920x1080"}
+    res = quality_map.get(quality, "1920x1080")
+    response = {
+        "video_url": video_url, "duration": duration,
+        "resolution": res, "frames": int(duration * 30),
+        "generation": "llm_dynamic_manim",
+    }
+    if include_narration:
+        try:
+            from tools.vibevoice import attach_narration_assets
+            fallback_text = narration_text or description
+            response.update(
+                await attach_narration_assets(
+                    video_path=result_path, narration_text=fallback_text.strip(),
+                    speaker=narration_speaker, prefix="scenes",
+                    metadata={"tool": "manim_execute_script", "background": background},
+                )
+            )
+        except Exception as exc:
+            response["narration_error"] = str(exc)
+    return json.dumps(response)
 
 
 TOOLS = [

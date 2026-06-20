@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any, TypedDict
 
 from langgraph.graph import END, StateGraph
-from tools.workflow_runtime import get_checkpointer, workflow_config
+from tools.workflow_runtime import ainvoke_with_checkpoint_fallback
 
 
 logger = logging.getLogger(__name__)
@@ -228,12 +228,6 @@ async def run_vision_agent(
           "error": str            # empty on success
         }
     """
-    checkpointer = await get_checkpointer()
-    graph = _GRAPHS.get(id(checkpointer))
-    if graph is None:
-        graph = build_vision_graph(checkpointer)
-        _GRAPHS[id(checkpointer)] = graph
-
     initial: VisionState = {
         "prompt": prompt,
         "reference_image_url": reference_image_url,
@@ -246,9 +240,12 @@ async def run_vision_agent(
         "error": "",
     }
 
-    final = await graph.ainvoke(
-        initial,
-        config=workflow_config(thread_id or f"vision-{os.getpid()}", "vision_agent"),
+    final = await ainvoke_with_checkpoint_fallback(
+        graph_cache=_GRAPHS,
+        graph_builder=build_vision_graph,
+        initial_state=initial,
+        thread_id=thread_id or f"vision-{os.getpid()}",
+        checkpoint_ns="vision_agent",
     )
     return {
         "output_path": final.get("output_path", ""),

@@ -15,7 +15,7 @@ from typing import Any, TypedDict
 
 from langgraph.graph import END, StateGraph
 
-from tools.workflow_runtime import get_checkpointer, workflow_config, workflow_persistence_mode
+from tools.workflow_runtime import ainvoke_with_checkpoint_fallback, workflow_persistence_mode
 from tools.progress_store import report_workflow_stage
 
 logger = logging.getLogger(__name__)
@@ -288,12 +288,6 @@ async def run_manim_workflow(
     narration_speaker: str = "Emma",
     workflow_thread_id: str = "",
 ) -> dict:
-    checkpointer = await get_checkpointer()
-    graph = _GRAPHS.get(id(checkpointer))
-    if graph is None:
-        graph = build_manim_workflow_graph(checkpointer)
-        _GRAPHS[id(checkpointer)] = graph
-
     thread_id = workflow_thread_id.strip() or f"manim-{uuid.uuid4().hex}"
     initial: ManimWorkflowState = {
         "description": description,
@@ -317,7 +311,13 @@ async def run_manim_workflow(
         "progress_updated_at": "",
         "progress_events": [],
     }
-    final = await graph.ainvoke(initial, config=workflow_config(thread_id, "manim_workflow"))
+    final = await ainvoke_with_checkpoint_fallback(
+        graph_cache=_GRAPHS,
+        graph_builder=build_manim_workflow_graph,
+        initial_state=initial,
+        thread_id=thread_id,
+        checkpoint_ns="manim_workflow",
+    )
     if final.get("error"):
         raise RuntimeError(final["error"])
     return final.get("result", {})

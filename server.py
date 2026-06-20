@@ -86,6 +86,96 @@ mcp = FastMCP(
 
 
 @mcp.tool()
+async def blender_execute_bpy_script(
+    prompt: str,
+    duration: float = 10.0,
+    style: str = "cinematic",
+    reference_image_url: str = "",
+    include_narration: bool = False,
+    narration_text: str = "",
+    narration_speaker: str = "Emma",
+) -> str:
+    """
+    Generate ANY 3D Blender scene from a natural language description.
+
+    Unlike the old template-based tools (which only covered ~20% of Blender's
+    capabilities), this tool uses LLM code generation to dynamically write and
+    execute arbitrary bpy Python code — giving access to 100% of Blender's API:
+    geometry nodes, physics simulations, character rigging, custom shaders,
+    particle systems, Grease Pencil, camera motion, and more.
+
+    The LLM writes the Blender Python script from scratch based on your prompt,
+    validates it, runs it headless, and retries automatically on failure with
+    web search debugging support (up to 5 attempts).
+
+    This REPLACES all old template-based blender_generate_* tools in a single
+    unified tool. Use this for ALL Blender 3D scene generation needs.
+
+    Args:
+        prompt: Natural language description of the scene. Be specific about:
+                - Objects/shapes to include
+                - Materials, colors, lighting
+                - Camera angles and motion
+                - Any animations or transformations
+                - Scene atmosphere and mood
+        duration: Target clip duration in seconds (default 10)
+        style: Visual style — "cinematic", "minimal", "energetic", "calm",
+               "neon", "dark", "bright", "toon"
+        reference_image_url: Optional URL of a reference/inspiration image
+        include_narration: If true, generate and attach VibeVoice narration
+        narration_text: Custom narration text (auto-generated from prompt if empty)
+        narration_speaker: VibeVoice speaker name (default "Emma")
+
+    Returns JSON: {"video_url": str, "duration": float, "resolution": str, "frames": int}
+    """
+    from tools.bpy_codegen import generate_and_run_bpy
+    from tools.storage import upload_render
+    import uuid
+
+    output_path = f"/tmp/bpy_scene_{uuid.uuid4().hex}.mp4"
+
+    result_path = await generate_and_run_bpy(
+        prompt=prompt,
+        duration=duration,
+        style=style,
+        output_path=output_path,
+        reference_image_url=reference_image_url,
+    )
+
+    video_url = upload_render(result_path, prefix="scenes")
+    try:
+        os.unlink(result_path)
+    except OSError:
+        pass
+
+    response = {
+        "video_url": video_url,
+        "duration": duration,
+        "resolution": "1920x1080",
+        "frames": int(duration * 60),
+        "generation": "llm_dynamic_bpy",
+    }
+
+    if include_narration:
+        try:
+            from tools.vibevoice import attach_narration_assets
+            fallback_text = narration_text or prompt
+            response.update(
+                await attach_narration_assets(
+                    video_path=result_path,
+                    narration_text=fallback_text.strip(),
+                    speaker=narration_speaker,
+                    prefix="scenes",
+                    metadata={"tool": "blender_execute_bpy_script", "style": style},
+                )
+            )
+        except Exception as exc:
+            response["narration_error"] = str(exc)
+
+    return json.dumps(response)
+
+
+@mcp.tool()
 async def blender_generate_scene(
     prompt: str,
     duration: float = 10.0,
@@ -96,6 +186,9 @@ async def blender_generate_scene(
     narration_speaker: str = "Emma",
 ) -> str:
     """
+    [DEPRECATED] Use blender_execute_bpy_script instead — it covers 100% of
+    Blender's API via LLM code generation instead of fixed templates.
+
     Generate a procedural 3D Blender scene as an MP4 clip.
 
     Args:
@@ -1055,10 +1148,31 @@ async def blender_generate_geometry_scatter(
 
 
 # ---------------------------------------------------------------------------
+# Web Search tool for LLM debugging pipeline
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+async def web_search(query: str) -> str:
+    """Search the web for information. Used by the LLM code generation pipeline
+    to look up bpy/Manim API documentation when generated code fails with
+    unfamiliar errors. Also available for general use.
+
+    Args:
+        query: Natural language search query
+
+    Returns: Search result snippets (up to 5 results)
+    """
+    from tools.bpy_codegen import web_search as _ws
+    return await _ws(query)
+
+
+# ---------------------------------------------------------------------------
 # REST API (for Rust BlenderMCPClient)
 # ---------------------------------------------------------------------------
 
 TOOL_HANDLERS = {
+    "blender_execute_bpy_script":     None,  # handled directly in rest_call_tool
+    "web_search":                     None,  # handled directly in rest_call_tool
     "blender_generate_scene":         impl_generate_scene,
     "blender_generate_thumbnail":     impl_generate_thumbnail,
     "blender_generate_title_card":    impl_generate_title_card,
@@ -1090,9 +1204,10 @@ TOOL_HANDLERS = {
 }
 
 
-# Register all tools with the async job queue
+# Register all tools with the async job queue (skip tools with no impl_fn)
 for _name, _fn in TOOL_HANDLERS.items():
-    _job_queue.register(_name, _fn)
+    if _fn is not None:
+        _job_queue.register(_name, _fn)
 
 
 def _check_api_key(request: Request) -> bool:
@@ -1144,7 +1259,15 @@ async def rest_call_tool(request: Request) -> JSONResponse:
         )
 
     try:
-        result = await TOOL_HANDLERS[tool_name](**args)
+        if tool_name == "blender_execute_bpy_script":
+            # Route through the MCP tool handler directly
+            result = await blender_execute_bpy_script(**args)
+        elif tool_name == "web_search":
+            from tools.bpy_codegen import web_search as _ws
+            result = await _ws(args.get("query", ""))
+        else:
+            handler = TOOL_HANDLERS[tool_name]
+            result = await handler(**args)
         logger.info("server.call_tool_completed tool=%s", tool_name)
         return JSONResponse({"result": result})
     except Exception as exc:

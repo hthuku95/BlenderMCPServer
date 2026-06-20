@@ -20,6 +20,7 @@ REST endpoints (wired in server.py):
 from __future__ import annotations
 
 import asyncio
+import inspect
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -88,6 +89,33 @@ class JobQueue:
     def register(self, tool_name: str, fn: Callable[..., Coroutine[Any, Any, dict]]) -> None:
         """Register a coroutine function as the handler for a tool name."""
         self._tool_registry[tool_name] = fn
+
+    @staticmethod
+    def _filter_handler_args(
+        handler: Callable[..., Coroutine[Any, Any, dict]],
+        args: dict,
+    ) -> dict:
+        """
+        Pass workflow metadata only to handlers that explicitly accept it.
+
+        The queue owns orchestration fields such as `workflow_thread_id`, but
+        several older render handlers still have narrow signatures. Filtering
+        here keeps durable progress tracking without turning queue metadata
+        into unexpected keyword argument failures.
+        """
+        try:
+            signature = inspect.signature(handler)
+        except (TypeError, ValueError):
+            return dict(args)
+
+        if any(
+            parameter.kind == inspect.Parameter.VAR_KEYWORD
+            for parameter in signature.parameters.values()
+        ):
+            return dict(args)
+
+        allowed = set(signature.parameters)
+        return {key: value for key, value in args.items() if key in allowed}
 
     async def submit(self, tool_name: str, args: dict) -> str:
         """Submit a job and return its job_id.  Starts worker loop on first call."""
@@ -181,7 +209,8 @@ class JobQueue:
             # QA, and upload before the result is ready to poll.
             _JOB_TIMEOUT = int(__import__("os").getenv("JOB_TIMEOUT_SECS", "1500"))
             try:
-                result = await asyncio.wait_for(handler(**args), timeout=_JOB_TIMEOUT)
+                handler_args = self._filter_handler_args(handler, args)
+                result = await asyncio.wait_for(handler(**handler_args), timeout=_JOB_TIMEOUT)
                 status.state = State.COMPLETED
                 status.result = result
                 await record_job_progress(

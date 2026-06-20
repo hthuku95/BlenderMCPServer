@@ -9,6 +9,7 @@ import asyncio
 import json
 import os
 import shutil
+import sys
 import tempfile
 from pathlib import Path
 
@@ -48,7 +49,7 @@ async def run_manim_scene(
 
     with tempfile.TemporaryDirectory(prefix="manim_work_") as work_dir:
         cmd = [
-            "python3", "-m", "manim",
+            sys.executable, "-m", "manim",
             f"-q{quality}",
             "--media_dir", work_dir,
             "--output_file", scene_class,

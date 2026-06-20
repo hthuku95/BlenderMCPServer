@@ -1,20 +1,23 @@
 """
-Durable LangGraph workflow for fixed-scene Manim renders.
+Durable LangGraph workflow for Manim scene renders with LLM fallback.
 
-Use this for specialty Manim tools that render a known scene file/class pair
-such as charts, flowcharts, timelines, and 3D math scenes.
+Use this for specialty Manim tools such as charts, flowcharts, timelines,
+and 3D math scenes. If the scene template file doesn't exist (templates have
+been replaced by LLM code generation), it falls through to generate_and_run_manim.
 """
 
 from __future__ import annotations
 
+import logging
 import os
 import uuid
 from typing import Any, TypedDict
 
 from langgraph.graph import END, StateGraph
 
-from tools.workflow_runtime import get_checkpointer, workflow_config
+from tools.workflow_runtime import ainvoke_with_checkpoint_fallback
 
+logger = logging.getLogger(__name__)
 _GRAPHS: dict[int, Any] = {}
 
 
@@ -38,13 +41,43 @@ async def _render_scene_node(state: ManimSceneWorkflowState) -> ManimSceneWorkfl
     if state.get("error"):
         return state
 
+    output_path = state.get("output_path") or f"/tmp/manim_scene_{uuid.uuid4().hex}.mp4"
+    scene_file = state["scene_file"]
+
+    # If the scene template file was deleted (replaced by LLM code generation),
+    # fall through to generate_and_run_manim
+    if not os.path.exists(scene_file):
+        from tools.manim_codegen import generate_and_run_manim
+
+        # Build a natural language description from the scene args
+        scene_args = state.get("scene_args", {}) or {}
+        chart_type = scene_args.get("chart_type", "")
+        title = scene_args.get("title", "")
+        args_desc = ", ".join(f"{k}={v}" for k, v in scene_args.items() if k not in ("title",))
+        description = f"{title}: Create a {chart_type} " if chart_type else ""
+        description += args_desc
+
+        logger.info(
+            "manim_scene_workflow: template %s not found, using LLM generation. description=%s",
+            scene_file,
+            description[:200],
+        )
+        await generate_and_run_manim(
+            description=description,
+            duration=state["duration"],
+            background="dark",
+            output_path=output_path,
+            transparent=False,
+            quality="m",
+        )
+        return {**state, "output_path": output_path, "error": ""}
+
     from tools.manim_runner import run_manim_scene
 
-    output_path = state.get("output_path") or f"/tmp/manim_scene_{uuid.uuid4().hex}.mp4"
     await run_manim_scene(
-        scene_file=state["scene_file"],
+        scene_file=scene_file,
         scene_class=state["scene_class"],
-        args=state.get("scene_args", {}),
+        args=scene_args,
         quality="m",
         output_path=output_path,
         timeout=300,
@@ -133,12 +166,6 @@ async def run_manim_scene_workflow(
     workflow_thread_id: str = "",
     output_path: str = "",
 ) -> dict:
-    checkpointer = await get_checkpointer()
-    graph = _GRAPHS.get(id(checkpointer))
-    if graph is None:
-        graph = build_manim_scene_workflow_graph(checkpointer)
-        _GRAPHS[id(checkpointer)] = graph
-
     thread_id = workflow_thread_id.strip() or f"manim-scene-{uuid.uuid4().hex}"
     initial: ManimSceneWorkflowState = {
         "workflow_thread_id": thread_id,
@@ -155,7 +182,13 @@ async def run_manim_scene_workflow(
         "result": {},
         "error": "",
     }
-    final = await graph.ainvoke(initial, config=workflow_config(thread_id, "manim_scene_workflow"))
+    final = await ainvoke_with_checkpoint_fallback(
+        graph_cache=_GRAPHS,
+        graph_builder=build_manim_scene_workflow_graph,
+        initial_state=initial,
+        thread_id=thread_id,
+        checkpoint_ns="manim_scene_workflow",
+    )
     if final.get("error"):
         raise RuntimeError(final["error"])
     return final.get("result", {})

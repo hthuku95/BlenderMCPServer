@@ -28,7 +28,7 @@ from typing import Literal, TypedDict
 from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 from langgraph.graph import END, StateGraph
 
-from tools.workflow_runtime import get_checkpointer, workflow_config
+from tools.workflow_runtime import ainvoke_with_checkpoint_fallback
 from tools.progress_store import report_workflow_stage
 
 # ---------------------------------------------------------------------------
@@ -374,12 +374,6 @@ async def run_latex_agent(
           "error": str              # empty on success
         }
     """
-    checkpointer = await get_checkpointer()
-    graph = _GRAPHS.get(id(checkpointer))
-    if graph is None:
-        graph = build_latex_graph(checkpointer)
-        _GRAPHS[id(checkpointer)] = graph
-
     thread_id = workflow_thread_id.strip() or f"latex-{uuid.uuid4().hex}"
 
     initial: LatexState = {
@@ -404,7 +398,13 @@ async def run_latex_agent(
         "progress_events": [],
     }
 
-    final = await graph.ainvoke(initial, config=workflow_config(thread_id, "latex_workflow"))
+    final = await ainvoke_with_checkpoint_fallback(
+        graph_cache=_GRAPHS,
+        graph_builder=build_latex_graph,
+        initial_state=initial,
+        thread_id=thread_id,
+        checkpoint_ns="latex_workflow",
+    )
     return {
         "output_path": final.get("output_path", ""),
         "chosen_option": final.get("chosen_option", ""),

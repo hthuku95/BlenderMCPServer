@@ -13,7 +13,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-from typing import Any
+from typing import Any, Callable
 
 from langgraph.checkpoint.memory import InMemorySaver
 
@@ -84,3 +84,90 @@ async def get_checkpointer() -> Any:
         _CHECKPOINTER_MODE = "memory"
         logger.info("workflow_runtime.checkpointer_ready mode=memory")
         return _CHECKPOINTER
+
+
+def _looks_like_stale_checkpoint_error(exc: Exception) -> bool:
+    message = str(exc).lower()
+    stale_fragments = (
+        "connection is closed",
+        "ssl connection has been closed",
+        "consuming input failed",
+        "connection already closed",
+        "connection lost",
+        "server closed the connection",
+        "pool is closed",
+    )
+    return any(fragment in message for fragment in stale_fragments)
+
+
+async def reset_checkpointer(*, fallback_to_memory: bool = False) -> Any:
+    """Drop the cached checkpointer after a stale DB connection.
+
+    LangGraph's Postgres saver keeps a live async connection. In long-lived API
+    workers that connection can be closed by the database/proxy after idle time.
+    Resetting here lets workflow tools recover without taking down generation.
+    """
+
+    global _CHECKPOINTER, _CHECKPOINTER_CTX, _CHECKPOINTER_MODE
+
+    async with _CHECKPOINTER_LOCK:
+        ctx = _CHECKPOINTER_CTX
+        _CHECKPOINTER = None
+        _CHECKPOINTER_CTX = None
+        _CHECKPOINTER_MODE = "memory"
+
+        if ctx is not None:
+            try:
+                await ctx.__aexit__(None, None, None)
+            except Exception as exc:
+                logger.debug("workflow_runtime.checkpointer_close_failed error=%s", exc)
+
+        if fallback_to_memory:
+            _CHECKPOINTER = InMemorySaver()
+            _CHECKPOINTER_MODE = "memory_fallback"
+            logger.warning("workflow_runtime.checkpointer_reset mode=memory_fallback")
+            return _CHECKPOINTER
+
+    return await get_checkpointer()
+
+
+async def ainvoke_with_checkpoint_fallback(
+    *,
+    graph_cache: dict[int, Any],
+    graph_builder: Callable[[Any], Any],
+    initial_state: dict,
+    thread_id: str,
+    checkpoint_ns: str,
+) -> dict:
+    """Invoke a compiled workflow graph and recover once from stale checkpoints."""
+
+    checkpointer = await get_checkpointer()
+    graph = graph_cache.get(id(checkpointer))
+    if graph is None:
+        graph = graph_builder(checkpointer)
+        graph_cache[id(checkpointer)] = graph
+
+    try:
+        return await graph.ainvoke(
+            initial_state,
+            config=workflow_config(thread_id, checkpoint_ns),
+        )
+    except Exception as exc:
+        if not _looks_like_stale_checkpoint_error(exc):
+            raise
+
+        logger.warning(
+            "workflow_runtime.stale_checkpoint_retry thread_id=%s checkpoint_ns=%s error=%s",
+            thread_id,
+            checkpoint_ns,
+            exc,
+        )
+        checkpointer = await reset_checkpointer(fallback_to_memory=True)
+        graph = graph_cache.get(id(checkpointer))
+        if graph is None:
+            graph = graph_builder(checkpointer)
+            graph_cache[id(checkpointer)] = graph
+        return await graph.ainvoke(
+            initial_state,
+            config=workflow_config(thread_id, checkpoint_ns),
+        )

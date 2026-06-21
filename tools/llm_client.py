@@ -5,20 +5,23 @@ Mirrors the Rust video_editor pattern where both GeminiClient and ClaudeClient
 are optional AppState fields, selected by env var at startup.
 
 Provider selection (LLM_PROVIDER env var):
-  "ollama"   — always use self-hosted Ollama Gemma 4 (no API key needed, default)
+  "qwen"     — fast lightweight Qwen 3 4B via Ollama (no API key needed)
+  "ollama"   — self-hosted Ollama Gemma 4B 12B (no API key needed, default)
   "gemini"   — always use Gemini (requires GEMINI_API_KEY)
   "nvidia"   — always use NVIDIA NIM Gemma (requires NVIDIA_API_KEY)
   "gemma"    — alias for NVIDIA NIM Gemma
   "deepseek" — always use DeepSeek (requires DEEPSEEK_API_KEY)
   "claude"   — always use Claude (requires ANTHROPIC_API_KEY)
-  "auto"     — try Ollama first, then Gemini, then NVIDIA Gemma, then DeepSeek, then Claude (default)
+  "auto"     — try Qwen first, then Ollama, then Gemini, then NVIDIA, then DeepSeek, then Claude (default)
 
 Models:
-  Ollama   — gemma4:12b           (overridable via OLLAMA_MODEL)
-  Gemini   — gemini-2.5-flash     (overridable via GEMINI_MODEL)
+  Qwen     — qwen3:4b              (overridable via QWEEN_MODEL)
+  Ollama   — gemma4:12b            (overridable via OLLAMA_MODEL)
+  Gemini   — gemini-2.5-flash      (overridable via GEMINI_MODEL)
   NVIDIA   — google/gemma-4-31b-it (overridable via NVIDIA_NIM_MODEL)
   DeepSeek — deepseek-v4-flash     (overridable via DEEPSEEK_MODEL)
   Claude   — claude-opus-4-6       (overridable via CLAUDE_MODEL)
+  Embed    — qwen3-embedding:4b    (overridable via OLLAMA_EMBEDDING_MODEL)
 
 LangSmith tracing (Phase 5):
   Set LANGCHAIN_API_KEY to enable automatic LangSmith tracing of all
@@ -78,13 +81,19 @@ _DEEPSEEK_TIMEOUT_SECONDS = float(os.getenv("DEEPSEEK_TIMEOUT_SECONDS", "60"))
 _OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://172.31.42.118:11434")
 _OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "gemma4:12b")
 _OLLAMA_TIMEOUT_SECONDS = float(os.getenv("OLLAMA_TIMEOUT_SECONDS", "120"))
+_QWEEN_MODEL = os.getenv("QWEEN_MODEL", "qwen3:4b")
 _CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-opus-4-6")
-_PROVIDER     = os.getenv("LLM_PROVIDER", "auto").lower()  # "ollama" | "gemini" | "nvidia" | "gemma" | "deepseek" | "claude" | "auto"
+_OLLAMA_EMBEDDING_MODEL = os.getenv("OLLAMA_EMBEDDING_MODEL", "qwen3-embedding:4b")
+_PROVIDER     = os.getenv("LLM_PROVIDER", "auto").lower()  # "qwen" | "ollama" | "gemini" | "nvidia" | "gemma" | "deepseek" | "claude" | "auto"
 
 
 # ---------------------------------------------------------------------------
 # Provider availability
 # ---------------------------------------------------------------------------
+
+def _has_qwen() -> bool:
+    return True  # self-hosted on same Ollama server, no API key needed
+
 
 def _has_ollama() -> bool:
     return True  # self-hosted, no API key needed
@@ -108,6 +117,9 @@ def _has_deepseek() -> bool:
 
 def _resolved_provider() -> str:
     """Return the provider that will actually be used given current env."""
+    if _PROVIDER == "qwen":
+        return "qwen"
+
     if _PROVIDER == "ollama":
         return "ollama"
 
@@ -139,7 +151,10 @@ def _resolved_provider() -> str:
             )
         return "deepseek"
 
-    # auto — prefer Ollama (self-hosted, free), then Gemini, then NVIDIA, then DeepSeek, then Claude
+    # auto — prefer Qwen (lightweight, fast), then Ollama (self-hosted, free),
+    # then Gemini, then NVIDIA, then DeepSeek, then Claude
+    if _has_qwen():
+        return "qwen"
     if _has_ollama():
         return "ollama"
     if _has_gemini():
@@ -177,6 +192,17 @@ def get_chat_model(
         A LangChain BaseChatModel that supports .bind_tools() and .invoke().
     """
     resolved = _resolve(provider)
+
+    if resolved == "qwen":
+        from langchain_openai import ChatOpenAI
+        return ChatOpenAI(
+            model=_QWEEN_MODEL,
+            api_key="ollama",  # ignored by Ollama but required by ChatOpenAI
+            base_url=_OLLAMA_BASE_URL,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            timeout=_OLLAMA_TIMEOUT_SECONDS,
+        )
 
     if resolved == "ollama":
         from langchain_openai import ChatOpenAI
@@ -255,6 +281,8 @@ def _resolve(override: str | None) -> str:
         return _resolved_provider()
 
     override = override.lower()
+    if override == "qwen":
+        return "qwen"
     if override == "ollama":
         return "ollama"
     if override == "gemini":
@@ -319,6 +347,39 @@ def _is_transient_deepseek_error(exc: Exception) -> bool:
         "connection",
     )
     return any(marker in message for marker in transient_markers)
+
+
+async def _generate_text_with_qwen(
+    *,
+    prompt: str,
+    temperature: float,
+    max_tokens: int,
+) -> str:
+    payload = {
+        "model": _QWEEN_MODEL,
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": max_tokens,
+        "temperature": temperature,
+        "stream": False,
+    }
+
+    async with httpx.AsyncClient(timeout=_OLLAMA_TIMEOUT_SECONDS) as client:
+        response = await client.post(
+            f"{_OLLAMA_BASE_URL}/v1/chat/completions",
+            headers={"Content-Type": "application/json"},
+            json=payload,
+        )
+
+    if response.status_code >= 400:
+        raise RuntimeError(
+            f"Qwen (Ollama) error {response.status_code}: {response.text[:500]}"
+        )
+
+    data = response.json()
+    try:
+        return data["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError) as exc:
+        raise RuntimeError(f"Qwen (Ollama) returned no content: {data}") from exc
 
 
 async def _generate_text_with_ollama(
@@ -481,6 +542,26 @@ async def generate_text(
     Returns: (response_text: str, provider_used: str)
     """
     resolved = _resolve(provider)
+
+    if resolved == "qwen":
+        qwen_errors: list[str] = []
+        for attempt in range(1, 4):
+            try:
+                text = await _generate_text_with_qwen(
+                    prompt=prompt,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                )
+                return text, "qwen"
+            except Exception as qwen_err:
+                qwen_errors.append(f"attempt {attempt}: {qwen_err}")
+                if attempt < 3:
+                    await asyncio.sleep(min(6, 2 * attempt))
+                    continue
+                break
+        if _PROVIDER != "auto":
+            raise RuntimeError("; ".join(qwen_errors))
+        # fall through to Ollama in auto mode
 
     if resolved == "ollama":
         ollama_errors: list[str] = []
@@ -659,3 +740,32 @@ def active_provider() -> str:
         return _resolved_provider()
     except RuntimeError:
         return "none"
+
+
+# ---------------------------------------------------------------------------
+# Embedding generation via Ollama (qwen3-embedding:4b)
+# ---------------------------------------------------------------------------
+
+def generate_embedding(text: str) -> list[float]:
+    """
+    Generate a vector embedding for the given text using the Ollama embedding model.
+    Uses qwen3-embedding:4b by default (overridable via OLLAMA_EMBEDDING_MODEL env var).
+    """
+    import requests
+    response = requests.post(
+        f"{_OLLAMA_BASE_URL}/api/embed",
+        json={
+            "model": _OLLAMA_EMBEDDING_MODEL,
+            "input": text,
+        },
+        timeout=30,
+    )
+    if response.status_code >= 400:
+        raise RuntimeError(
+            f"Ollama embedding error {response.status_code}: {response.text[:500]}"
+        )
+    data = response.json()
+    try:
+        return data["embeddings"][0]
+    except (KeyError, IndexError, TypeError) as exc:
+        raise RuntimeError(f"Ollama embedding returned no data: {data}") from exc

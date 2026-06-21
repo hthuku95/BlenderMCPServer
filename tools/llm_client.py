@@ -349,37 +349,59 @@ def _is_transient_deepseek_error(exc: Exception) -> bool:
     return any(marker in message for marker in transient_markers)
 
 
-async def _generate_text_with_qwen(
+async def _generate_text_with_ollama_model(
     *,
+    model: str,
     prompt: str,
     temperature: float,
     max_tokens: int,
 ) -> str:
     payload = {
-        "model": _QWEEN_MODEL,
-        "messages": [{"role": "user", "content": prompt}],
-        "max_tokens": max_tokens,
-        "temperature": temperature,
+        "model": model,
+        "messages": [
+            {"role": "system", "content": "You are a helpful assistant. Output only the requested content without reasoning."},
+            {"role": "user", "content": prompt},
+        ],
+        "options": {
+            "think": False,
+        },
         "stream": False,
     }
 
     async with httpx.AsyncClient(timeout=_OLLAMA_TIMEOUT_SECONDS) as client:
         response = await client.post(
-            f"{_OLLAMA_BASE_URL}/v1/chat/completions",
+            f"{_OLLAMA_BASE_URL}/api/chat",
             headers={"Content-Type": "application/json"},
             json=payload,
         )
 
     if response.status_code >= 400:
         raise RuntimeError(
-            f"Qwen (Ollama) error {response.status_code}: {response.text[:500]}"
+            f"Ollama ({model}) error {response.status_code}: {response.text[:500]}"
         )
 
     data = response.json()
-    try:
-        return data["choices"][0]["message"]["content"]
-    except (KeyError, IndexError, TypeError) as exc:
-        raise RuntimeError(f"Qwen (Ollama) returned no content: {data}") from exc
+    content = (data.get("message") or {}).get("content") or ""
+    thinking = (data.get("message") or {}).get("thinking") or ""
+    if content.strip():
+        return content
+    if thinking.strip():
+        return thinking
+    raise RuntimeError(f"Ollama ({model}) returned empty: {data}")
+
+
+async def _generate_text_with_qwen(
+    *,
+    prompt: str,
+    temperature: float,
+    max_tokens: int,
+) -> str:
+    return await _generate_text_with_ollama_model(
+        model=_QWEEN_MODEL,
+        prompt=prompt,
+        temperature=temperature,
+        max_tokens=max_tokens,
+    )
 
 
 async def _generate_text_with_ollama(
@@ -388,31 +410,12 @@ async def _generate_text_with_ollama(
     temperature: float,
     max_tokens: int,
 ) -> str:
-    payload = {
-        "model": _OLLAMA_MODEL,
-        "messages": [{"role": "user", "content": prompt}],
-        "max_tokens": max_tokens,
-        "temperature": temperature,
-        "stream": False,
-    }
-
-    async with httpx.AsyncClient(timeout=_OLLAMA_TIMEOUT_SECONDS) as client:
-        response = await client.post(
-            f"{_OLLAMA_BASE_URL}/v1/chat/completions",
-            headers={"Content-Type": "application/json"},
-            json=payload,
-        )
-
-    if response.status_code >= 400:
-        raise RuntimeError(
-            f"Ollama error {response.status_code}: {response.text[:500]}"
-        )
-
-    data = response.json()
-    try:
-        return data["choices"][0]["message"]["content"]
-    except (KeyError, IndexError, TypeError) as exc:
-        raise RuntimeError(f"Ollama returned no content: {data}") from exc
+    return await _generate_text_with_ollama_model(
+        model=_OLLAMA_MODEL,
+        prompt=prompt,
+        temperature=temperature,
+        max_tokens=max_tokens,
+    )
 
 
 async def _generate_text_with_nvidia(

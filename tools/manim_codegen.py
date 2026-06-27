@@ -45,29 +45,9 @@ _WEB_SEARCH_RE = re.compile(r"WEB_SEARCH:\s*(.+?)(?:\n|$)", re.IGNORECASE)
 # ---------------------------------------------------------------------------
 
 async def _web_search(query: str, num_results: int = 5) -> str:
-    """Search the web via DuckDuckGo and return text snippet results."""
-    try:
-        import httpx
-        url = "https://html.duckduckgo.com/html/"
-        async with httpx.AsyncClient(timeout=15) as client:
-            resp = await client.post(url, data={"q": query}, follow_redirects=True)
-            resp.raise_for_status()
-        results = []
-        for match in re.finditer(
-            r'class="result__snippet"[^>]*>(.*?)</(?:a|span|td)>',
-            resp.text,
-            re.DOTALL,
-        ):
-            snippet = re.sub(r"<[^>]+>", "", match.group(1)).strip()
-            if snippet:
-                results.append(snippet)
-            if len(results) >= num_results:
-                break
-        if not results:
-            return f"No results found for: {query}"
-        return "\n".join(f"• {r}" for r in results)
-    except Exception as exc:
-        return f"Web search failed: {exc}"
+    """Search the web via BrowserBase and return structured results."""
+    from tools.browserbase_client import browserbase_search
+    return await browserbase_search(query, num_results)
 
 
 async def _execute_web_search(text: str) -> str:

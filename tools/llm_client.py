@@ -565,6 +565,7 @@ async def generate_text(
         if _PROVIDER != "auto":
             raise RuntimeError("; ".join(qwen_errors))
         # fall through to Ollama in auto mode
+        resolved = "ollama"
 
     if resolved == "ollama":
         ollama_errors: list[str] = []
@@ -586,6 +587,7 @@ async def generate_text(
             raise RuntimeError("; ".join(ollama_errors))
         # fall through to Gemini in auto mode
 
+        resolved = "gemini"
     if resolved == "gemini":
         try:
             gemini_errors: list[str] = []

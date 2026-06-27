@@ -1245,14 +1245,30 @@ async def web_search(query: str) -> str:
     return await _ws(query)
 
 
+@mcp.tool()
+async def web_fetch(url: str) -> str:
+    """Fetch a web page and return its content as clean markdown.
+    Used by the LLM code generation pipeline to read API documentation,
+    tutorials, or reference pages when generated code fails.
+
+    Args:
+        url: The full URL to fetch (including https://)
+
+    Returns: Page content as clean markdown text (up to 8000 chars)
+    """
+    from tools.browserbase_client import browserbase_fetch
+    return await browserbase_fetch(url)
+
+
 # ---------------------------------------------------------------------------
 # REST API (for Rust BlenderMCPClient)
 # ---------------------------------------------------------------------------
 
 TOOL_HANDLERS = {
-    "blender_execute_bpy_script":     None,  # handled directly in rest_call_tool
-    "manim_execute_script":           None,  # handled directly in rest_call_tool
-    "web_search":                     None,  # handled directly in rest_call_tool
+    "blender_execute_bpy_script":     blender_execute_bpy_script,  # also registered for job queue
+    "manim_execute_script":           manim_execute_script,  # also registered for job queue
+    "web_search":                     web_search,  # also registered for job queue
+    "web_fetch":                      web_fetch,
     "blender_generate_scene":         impl_generate_scene,
     "blender_generate_thumbnail":     impl_generate_thumbnail,
     "blender_generate_title_card":    impl_generate_title_card,

@@ -1363,6 +1363,9 @@ async def rest_call_tool(request: Request) -> JSONResponse:
         elif tool_name == "web_search":
             from tools.bpy_codegen import web_search as _ws
             result = await _ws(args.get("query", ""))
+        elif tool_name == "web_fetch":
+            from tools.browserbase_client import browserbase_fetch
+            result = await browserbase_fetch(args.get("url", ""))
         else:
             handler = TOOL_HANDLERS[tool_name]
             result = await handler(**args)

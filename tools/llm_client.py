@@ -362,8 +362,9 @@ async def _generate_text_with_ollama_model(
             {"role": "system", "content": "You are a helpful assistant. Output only the requested content without reasoning."},
             {"role": "user", "content": prompt},
         ],
+        "think": False,
         "options": {
-            "think": False,
+            "num_predict": max_tokens,
         },
         "stream": False,
     }

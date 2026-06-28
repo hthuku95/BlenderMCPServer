@@ -1264,11 +1264,21 @@ async def web_fetch(url: str) -> str:
 # REST API (for Rust BlenderMCPClient)
 # ---------------------------------------------------------------------------
 
+async def _run_director_handler(**kwargs):
+    """Adapt run_director for the call_tool interface (Rust calls this via POST /api/call_tool)."""
+    from agents.director import run_director as _run_director
+    brief = kwargs.get("brief", "")
+    provider = kwargs.get("provider") or None
+    result = await _run_director(brief, provider=provider)
+    return json.dumps(result)
+
+
 TOOL_HANDLERS = {
     "blender_execute_bpy_script":     blender_execute_bpy_script,  # also registered for job queue
     "manim_execute_script":           manim_execute_script,  # also registered for job queue
     "web_search":                     web_search,  # also registered for job queue
     "web_fetch":                      web_fetch,
+    "run_director":                   _run_director_handler,
     "blender_generate_scene":         impl_generate_scene,
     "blender_generate_thumbnail":     impl_generate_thumbnail,
     "blender_generate_title_card":    impl_generate_title_card,

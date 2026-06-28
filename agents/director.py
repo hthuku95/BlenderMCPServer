@@ -162,9 +162,41 @@ async def manim_execute_script(
     return json.dumps(response)
 
 
+@tool
+async def review_rendered_video(
+    video_url: str,
+    brief: str,
+) -> str:
+    """
+    Review a rendered video against its creative brief for quality assurance.
+
+    Uses Gemini's native video understanding to evaluate composition, pacing,
+    technical quality, and alignment with the original brief. Call this after
+    any blender_execute_bpy_script or manim_execute_script call returns a
+    video_url to verify the output meets expectations.
+
+    If the review returns quality_score < 0.6 or brief_match_score < 0.6,
+    re-run the render with the suggested improvements.
+
+    Args:
+        video_url: The video_url from a previous render result.
+        brief: The original prompt/description used to create the video.
+
+    Returns JSON: {"quality_score": float, "brief_match_score": float,
+                   "technical_issues": [str], "visual_quality": str,
+                   "composition_feedback": str, "pacing_feedback": str,
+                   "suggested_improvements": [str], "summary": str}
+    """
+    from tools.video_review import review_video as _review
+
+    result = await _review(video_url=video_url, brief=brief)
+    return json.dumps(result)
+
+
 TOOLS = [
     blender_execute_bpy_script,
     manim_execute_script,
+    review_rendered_video,
 ]
 
 # ---------------------------------------------------------------------------
@@ -182,18 +214,23 @@ class DirectorState(TypedDict):
 # ---------------------------------------------------------------------------
 
 _SYSTEM = (
-    "You are a professional video production director AI with access to 2 consolidated tools "
-    "that cover ALL 3D Blender rendering and ALL Manim animations:\n\n"
+    "You are a professional video production director AI with access to 3 tools "
+    "that cover ALL 3D Blender rendering, ALL Manim animations, and quality review:\n\n"
     "1. blender_execute_bpy_script — for EVERYTHING 3D/Blender: scenes, thumbnails, title cards, "
     "lower-thirds, UI device mockups, logo reveals, particle effects, abstract backgrounds, "
     "countdowns, camera fly-throughs, toon scenes, grease pencil, geometry scattering, etc.\n"
     "2. manim_execute_script — for EVERYTHING Manim: math equations, data charts (bar/line/pie/scatter), "
     "flowcharts, 3D math, code animations, timelines, network graphs, text animations, "
-    "vector fields, matrix transforms, polar graphs, geometry proofs, etc.\n\n"
+    "vector fields, matrix transforms, polar graphs, geometry proofs, etc.\n"
+    "3. review_rendered_video — quality-assurance review of any rendered video. Pass the video_url "
+    "from the render result and the original brief. Returns a quality score (0-1) and suggested "
+    "improvements.\n\n"
     "Given a creative brief, decide which tools to call and with what parameters to produce "
     "the best asset package. Call tools in a logical sequence — title cards before scenes, "
     "lower-thirds with the host's name when mentioned, thumbnails when the channel is mentioned, "
     "device mockups when showcasing an app or website. "
+    "After each render, call review_rendered_video to check quality. If the score is below 0.6, "
+    "re-render with the suggested improvements. "
     "After all tools have finished, write a brief summary of what was produced."
 )
 

@@ -21,6 +21,8 @@ import json
 import os
 from pathlib import Path
 
+from tools.llm_client import _GEMINI_MODEL, _CLAUDE_MODEL
+
 
 _REMOTE_IMAGE_HEADERS = {
     "User-Agent": (
@@ -95,7 +97,7 @@ def _gemini_vision_single(prompt: str, image_path_or_url: str) -> str:
     media_type, b64 = _encode_image(image_path_or_url)
 
     response = client.models.generate_content(
-        model="gemini-2.5-flash",
+        model=_GEMINI_MODEL,
         contents=[
             genai_types.Part.from_bytes(data=__import__("base64").b64decode(b64), mime_type=media_type),
             prompt,
@@ -118,7 +120,7 @@ def _gemini_vision_two(prompt: str, image1: str, image2: str) -> str:
     mt2, b2 = _encode_image(image2)
 
     response = client.models.generate_content(
-        model="gemini-2.5-flash",
+        model=_GEMINI_MODEL,
         contents=[
             genai_types.Part.from_bytes(data=__import__("base64").b64decode(b1), mime_type=mt1),
             genai_types.Part.from_bytes(data=__import__("base64").b64decode(b2), mime_type=mt2),
@@ -140,7 +142,7 @@ def _claude_vision_single(prompt: str, image_path_or_url: str) -> str:
     media_type, b64 = _encode_image(image_path_or_url)
 
     response = client.messages.create(
-        model="claude-sonnet-4-6",
+        model=_CLAUDE_MODEL,
         max_tokens=1024,
         messages=[{
             "role": "user",
@@ -166,7 +168,7 @@ def _claude_vision_two(prompt: str, image1: str, image2: str) -> str:
     mt2, b2 = _encode_image(image2)
 
     response = client.messages.create(
-        model="claude-sonnet-4-6",
+        model=_CLAUDE_MODEL,
         max_tokens=1024,
         messages=[{
             "role": "user",

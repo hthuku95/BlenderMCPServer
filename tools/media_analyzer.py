@@ -22,6 +22,8 @@ from typing import Any
 
 import httpx
 
+from tools.llm_client import _GEMINI_MODEL
+
 GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta"
 
 # Priority: dedicated blender key → video key → generic key
@@ -230,7 +232,7 @@ async def _wait_for_file_active(api_key: str, file_uri: str, max_attempts: int =
 
 async def _call_gemini(api_key: str, payload: dict[str, Any]) -> dict[str, Any]:
     """POST to Gemini generateContent and parse the VideoAnalysis JSON response."""
-    url = f"{GEMINI_API_BASE}/models/gemini-2.5-flash:generateContent?key={api_key}"
+    url = f"{GEMINI_API_BASE}/models/{_GEMINI_MODEL}:generateContent?key={api_key}"
 
     async with httpx.AsyncClient(timeout=180.0) as client:
         resp = await client.post(url, json=payload)

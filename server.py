@@ -18,6 +18,7 @@ Deploy on Render:
 import json
 import logging
 import os
+import uuid
 
 import uvicorn
 from dotenv import load_dotenv
@@ -1265,12 +1266,18 @@ async def web_fetch(url: str) -> str:
 # ---------------------------------------------------------------------------
 
 async def _run_director_handler(**kwargs):
-    """Adapt run_director for the call_tool interface (Rust calls this via POST /api/call_tool)."""
+    """
+    Adapt run_director for the call_tool interface.
+    - When called via job queue: workflow_thread_id matches the submit() job_id,
+      so progress events align with the polled job.
+    - When called directly via call_tool: generates a fresh job_id internally.
+    """
     from agents.director import run_director as _run_director
     brief = kwargs.get("brief", "")
     provider = kwargs.get("provider") or None
-    result = await _run_director(brief, provider=provider)
-    return json.dumps(result)
+    job_id = kwargs.get("workflow_thread_id", "") or str(uuid.uuid4())
+    result = await _run_director(brief, provider=provider, job_id=job_id)
+    return json.dumps({**result, "job_id": job_id})
 
 
 TOOL_HANDLERS = {
@@ -1387,7 +1394,10 @@ async def rest_call_tool(request: Request) -> JSONResponse:
 
 
 async def rest_director(request: Request) -> JSONResponse:
-    """Run the LangGraph director agent with a high-level creative brief."""
+    """Run the LangGraph director agent with a high-level creative brief.
+
+    Returns immediately with a job_id. Poll GET /api/jobs/{job_id} for progress.
+    """
     if not _check_api_key(request):
         return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
@@ -1400,14 +1410,18 @@ async def rest_director(request: Request) -> JSONResponse:
     if not brief:
         return JSONResponse({"error": "'brief' field is required"}, status_code=400)
 
-    # Optional: caller can force a provider ("gemini" | "claude" | "auto")
-    provider = body.get("provider") or None
+    provider = body.get("provider") or ""
+    args = {"brief": brief, "provider": provider}
 
     try:
-        from agents.director import run_director
-        result = await run_director(brief, provider=provider)
-        return JSONResponse(result)
+        job_id = await _job_queue.submit("run_director", args)
+        logger.info("server.director_enqueued job_id=%s brief=%.60s", job_id, brief)
+        return JSONResponse(
+            {"job_id": job_id, "state": "running", "poll_url": f"/api/jobs/{job_id}"},
+            status_code=202,
+        )
     except Exception as exc:
+        logger.exception("server.director_failed brief=%.60s", brief)
         return JSONResponse({"error": str(exc)}, status_code=500)
 
 

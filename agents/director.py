@@ -25,6 +25,7 @@ Usage:
     # result = {"assets": [{"tool": str, "url": str}, ...], "summary": str, "provider": str}
 """
 
+import datetime
 import json
 import os
 import uuid
@@ -37,6 +38,7 @@ from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
 
 from tools.llm_client import get_chat_model, active_provider
+from tools.progress_store import record_job_progress
 
 # ---------------------------------------------------------------------------
 # LangChain tool wrappers (calls the consolidated codegen directly)
@@ -207,6 +209,30 @@ class DirectorState(TypedDict):
     messages: Annotated[list, add_messages]
     assets: list[dict]      # accumulated {"tool": str, "url": str} entries
     provider: str           # which LLM is driving this run
+    job_id: str             # job_id for progress tracking
+
+
+# ---------------------------------------------------------------------------
+# Progress helper
+# ---------------------------------------------------------------------------
+
+async def _record(state: DirectorState, stage: str, message: str, details: dict | None = None):
+    """Record a progress event if job_id is set."""
+    jid = state.get("job_id", "")
+    if not jid:
+        return
+    try:
+        await record_job_progress(
+            job_id=jid,
+            workflow_thread_id=jid,
+            tool="run_director",
+            state="running" if stage != "completed" else "completed",
+            stage=stage,
+            message=message,
+            details=details or {},
+        )
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -238,28 +264,44 @@ _SYSTEM = (
 # Graph nodes
 # ---------------------------------------------------------------------------
 
-def agent_node(state: DirectorState) -> dict:
+async def agent_node(state: DirectorState) -> dict:
     provider = state.get("provider") or active_provider()
+    await _record(state, "agent_planning", "Analyzing brief and planning scenes...")
+
     llm = get_chat_model(
         temperature=0.7,
         max_tokens=4096,
         provider=provider,
     ).bind_tools(TOOLS)
 
-    # Use proper SystemMessage so both Claude and Gemini receive it correctly
     messages = state["messages"]
     full_messages = [SystemMessage(content=_SYSTEM)] + list(messages)
 
     response = llm.invoke(full_messages)
+    tool_count = len(response.tool_calls) if hasattr(response, "tool_calls") and response.tool_calls else 0
+    await _record(state, "agent_planned", f"Planned {tool_count} tool calls", {
+        "tool_calls": [t.name for t in response.tool_calls] if hasattr(response, "tool_calls") and response.tool_calls else [],
+    })
     return {"messages": [response], "assets": state.get("assets", []), "provider": provider}
 
 
-def tools_node(state: DirectorState) -> dict:
+async def tools_node(state: DirectorState) -> dict:
     """Run tool calls and harvest asset URLs from results."""
     node = ToolNode(TOOLS)
+
+    tool_names = []
+    last = state["messages"][-1]
+    if hasattr(last, "tool_calls") and last.tool_calls:
+        for tc in last.tool_calls:
+            name = tc.get("name") if isinstance(tc, dict) else tc.name
+            tool_names.append(name)
+    tool_label = ", ".join(tool_names) if tool_names else "tools"
+    await _record(state, "rendering", f"Rendering: {tool_label}...")
+
     result = node.invoke(state)
 
     assets = list(state.get("assets", []))
+    asset_urls = []
     for msg in result.get("messages", []):
         if isinstance(msg, ToolMessage):
             try:
@@ -267,8 +309,14 @@ def tools_node(state: DirectorState) -> dict:
                 for url_key in ("video_url", "image_url"):
                     if url := data.get(url_key):
                         assets.append({"tool": msg.name, "url": url})
+                        asset_urls.append(url)
             except (json.JSONDecodeError, AttributeError):
                 pass
+
+    await _record(state, "rendered", f"Completed {tool_label}", {
+        "assets_created": len(asset_urls),
+        "tool": tool_label,
+    })
 
     return {
         "messages": result.get("messages", []),
@@ -302,7 +350,7 @@ def build_director_graph():
 # Public API
 # ---------------------------------------------------------------------------
 
-async def run_director(brief: str, provider: str | None = None) -> dict:
+async def run_director(brief: str, provider: str | None = None, job_id: str = "") -> dict:
     """
     Run the director agent with a creative brief.
 
@@ -310,6 +358,8 @@ async def run_director(brief: str, provider: str | None = None) -> dict:
         brief:    Natural language description of what to produce.
         provider: Override LLM_PROVIDER for this run.
                   "gemini" | "claude" | "auto" | None (use env default).
+        job_id:   Optional job_id for progress tracking. If empty, events
+                  are not recorded.
 
     Returns:
         {
@@ -325,7 +375,22 @@ async def run_director(brief: str, provider: str | None = None) -> dict:
         "messages": [HumanMessage(content=brief)],
         "assets": [],
         "provider": resolved,
+        "job_id": job_id,
     }
+
+    if job_id:
+        try:
+            await record_job_progress(
+                job_id=job_id,
+                workflow_thread_id=job_id,
+                tool="run_director",
+                state="running",
+                stage="starting",
+                message="Director agent started",
+                details={"brief": brief[:200], "provider": resolved},
+            )
+        except Exception:
+            pass
 
     final = await graph.ainvoke(init)
 
@@ -335,8 +400,26 @@ async def run_director(brief: str, provider: str | None = None) -> dict:
             summary = msg.content if isinstance(msg.content, str) else str(msg.content)
             break
 
-    return {
+    result = {
         "assets": final["assets"],
         "summary": summary,
         "provider": final.get("provider", resolved),
     }
+
+    if job_id:
+        try:
+            await record_job_progress(
+                job_id=job_id,
+                workflow_thread_id=job_id,
+                tool="run_director",
+                state="completed",
+                stage="completed",
+                message="Director agent completed",
+                details={"asset_count": len(final["assets"])},
+                result=result,
+                finished_at=datetime.datetime.now(datetime.timezone.utc),
+            )
+        except Exception:
+            pass
+
+    return result

@@ -1277,7 +1277,7 @@ async def _run_director_handler(**kwargs):
     provider = kwargs.get("provider") or None
     job_id = kwargs.get("workflow_thread_id", "") or str(uuid.uuid4())
     result = await _run_director(brief, provider=provider, job_id=job_id)
-    return json.dumps({**result, "job_id": job_id})
+    return {**result, "job_id": job_id}
 
 
 TOOL_HANDLERS = {

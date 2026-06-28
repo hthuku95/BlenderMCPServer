@@ -1,35 +1,35 @@
 """
 Video quality review — sends full video to multimodal models for native understanding.
 
-Uses a fallback chain (Gemini → Claude) that natively understand video. Never
-extracts frames — always sends the full video file.
+Fallback chain (per rule #4: Ollama is always default):
+  1. Ollama/Gemma 4 12B (self-hosted, free — no API key, no rate limits)
+  2. Gemini (File API upload + native video understanding — quota-limited)
+  3. Claude (direct URL video understanding — billing)
+
+For Ollama, extracts evenly-spaced keyframes since Ollama's API accepts images
+(video not yet natively supported in /api/chat). For Gemini and Claude, sends
+the full video file natively.
 
 Each provider uses its env-var-configured model from llm_client.py.
 """
 
 from __future__ import annotations
 
+import asyncio
+import base64
 import json
 import logging
 import os
+import subprocess
 import tempfile
 
 import httpx
 
-from tools.llm_client import _GEMINI_MODEL, _CLAUDE_MODEL
+from tools.llm_client import _OLLAMA_BASE_URL, _OLLAMA_MODEL, _GEMINI_MODEL, _CLAUDE_MODEL
 
 logger = logging.getLogger(__name__)
 
 GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta"
-
-
-def _get_gemini_api_key() -> str | None:
-    return (
-        os.getenv("BLENDER_GEMINI_API_KEY")
-        or os.getenv("VIDEO_GEMINI_API_KEY")
-        or os.getenv("GEMINI_API_KEY")
-    )
-
 
 _QA_PROMPT = """You are a professional video quality reviewer. Analyze the rendered video against the original creative brief.
 
@@ -58,8 +58,9 @@ async def review_video(
     """Review a rendered video against its creative brief.
 
     Fallback chain:
-      1. Gemini (File API upload + native video understanding)
-      2. Claude (direct URL video understanding)
+      1. Ollama/Gemma 4 12B (self-hosted, free — default, always tried first)
+      2. Gemini (File API upload + native video understanding)
+      3. Claude (direct URL video understanding)
 
     Args:
         video_url: Presigned R2 URL or any direct video URL.
@@ -72,7 +73,15 @@ async def review_video(
     """
     errors: list[str] = []
 
-    # --- 1. Try Gemini ---
+    # --- 1. Try Ollama/Gemma 4 12B (free, self-hosted, always default) ---
+    try:
+        return await _review_with_ollama(video_url, brief)
+    except Exception as exc:
+        msg = f"Ollama review failed: {exc}"
+        logger.warning("video_review: %s", msg)
+        errors.append(msg)
+
+    # --- 2. Try Gemini (quota-limited, fallback) ---
     gemini_key = _get_gemini_api_key()
     if gemini_key:
         try:
@@ -82,7 +91,7 @@ async def review_video(
             logger.warning("video_review: %s", msg)
             errors.append(msg)
 
-    # --- 2. Try Claude (direct URL, no upload needed) ---
+    # --- 3. Try Claude (billing, last resort) ---
     claude_key = os.getenv("ANTHROPIC_API_KEY")
     if claude_key:
         try:
@@ -107,8 +116,142 @@ async def review_video(
 
 
 # ---------------------------------------------------------------------------
-# Gemini provider (File API upload + video understanding)
+# 1. Ollama provider (Gemma 4 12B — free, self-hosted, always default)
 # ---------------------------------------------------------------------------
+
+
+async def _review_with_ollama(video_url: str, brief: str) -> dict:
+    """Review video using Ollama/Gemma 4 12B.
+
+    Downloads the video, extracts 5 evenly-spaced frames via FFmpeg,
+    base64-encodes them, and sends them to Ollama's /api/chat as images.
+    """
+    temp_video = None
+    try:
+        async with httpx.AsyncClient(timeout=300.0, follow_redirects=True) as client:
+            resp = await client.get(video_url)
+            resp.raise_for_status()
+            video_bytes = resp.content
+
+        with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp:
+            tmp.write(video_bytes)
+            temp_video = tmp.name
+
+        frames_base64 = _extract_frames(temp_video, num_frames=5)
+
+        prompt = _QA_PROMPT.format(brief=brief)
+
+        # Build Ollama /api/chat payload with image frames
+        messages = [
+            {
+                "role": "user",
+                "content": (
+                    "I will send you 5 evenly-spaced frames from a rendered video. "
+                    "Please analyze the video quality based on these frames.\n\n"
+                    + prompt
+                ),
+            }
+        ]
+
+        for i, b64 in enumerate(frames_base64):
+            messages[0]["content"] += f"\n\nFrame {i+1}/5:"
+            messages.append({
+                "role": "user",
+                "content": "",
+                "images": [b64],
+            })
+
+        payload = {
+            "model": _OLLAMA_MODEL,
+            "messages": messages,
+            "options": {"think": False},
+            "stream": False,
+        }
+
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            resp = await client.post(
+                f"{_OLLAMA_BASE_URL}/api/chat",
+                headers={"Content-Type": "application/json"},
+                json=payload,
+            )
+
+        if resp.status_code >= 400:
+            raise RuntimeError(
+                f"Ollama ({_OLLAMA_MODEL}) error {resp.status_code}: {resp.text[:500]}"
+            )
+
+        data = resp.json()
+        content = (data.get("message") or {}).get("content") or ""
+        if not content:
+            content = (data.get("message") or {}).get("thinking") or ""
+        if not content:
+            raise RuntimeError(f"Ollama returned empty: {data}")
+
+        return _parse_json_response(content, f"ollama:{_OLLAMA_MODEL}")
+
+    finally:
+        if temp_video and os.path.exists(temp_video):
+            try:
+                os.unlink(temp_video)
+            except OSError:
+                pass
+
+
+def _extract_frames(video_path: str, num_frames: int = 5) -> list[str]:
+    """Extract evenly-spaced keyframes from a video as base64-encoded JPEGs using FFmpeg."""
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe", "-v", "error",
+                "-show_entries", "format=duration",
+                "-of", "default=noprint_wrappers=1:nokey=1",
+                video_path,
+            ],
+            capture_output=True, text=True, timeout=30,
+        )
+        duration = float(result.stdout.strip())
+    except (subprocess.TimeoutExpired, ValueError, OSError) as exc:
+        raise RuntimeError(f"Failed to get video duration: {exc}") from exc
+
+    if duration <= 0:
+        raise RuntimeError(f"Invalid video duration: {duration}")
+
+    frames: list[str] = []
+    for i in range(num_frames):
+        timestamp = duration * (i + 0.5) / num_frames
+        try:
+            proc = subprocess.run(
+                [
+                    "ffmpeg", "-y", "-ss", str(timestamp),
+                    "-i", video_path,
+                    "-vframes", "1",
+                    "-q:v", "2",
+                    "-f", "image2pipe",
+                    "-vcodec", "mjpeg",
+                    "pipe:1",
+                ],
+                capture_output=True, timeout=30,
+            )
+            if proc.returncode != 0 or not proc.stdout:
+                raise RuntimeError(f"ffmpeg frame extraction failed: {proc.stderr.decode(errors='replace')[:200]}")
+            frames.append(base64.b64encode(proc.stdout).decode("ascii"))
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError(f"ffmpeg timed out at timestamp {timestamp}") from exc
+
+    return frames
+
+
+# ---------------------------------------------------------------------------
+# 2. Gemini provider (File API upload + native video understanding)
+# ---------------------------------------------------------------------------
+
+
+def _get_gemini_api_key() -> str | None:
+    return (
+        os.getenv("BLENDER_GEMINI_API_KEY")
+        or os.getenv("VIDEO_GEMINI_API_KEY")
+        or os.getenv("GEMINI_API_KEY")
+    )
 
 
 async def _review_with_gemini(video_url: str, brief: str, api_key: str) -> dict:
@@ -182,8 +325,6 @@ async def _upload_to_gemini_file_api(api_key: str, file_path: str) -> str:
 
 
 async def _wait_for_file_active(api_key: str, file_uri: str, max_attempts: int = 30) -> None:
-    import asyncio
-
     file_name = "/".join(file_uri.split("/")[-2:])
     status_url = f"{GEMINI_API_BASE}/{file_name}?key={api_key}"
 
@@ -217,31 +358,16 @@ async def _call_gemini(api_key: str, payload: dict, model: str) -> dict:
     except (KeyError, IndexError) as exc:
         raise ValueError(f"Unexpected Gemini response shape: {data}") from exc
 
-    cleaned = text.strip().lstrip("```json").lstrip("```").rstrip("```").strip()
-
-    try:
-        parsed = json.loads(cleaned)
-        parsed.setdefault("quality_score", 0.0)
-        parsed.setdefault("brief_match_score", 0.0)
-        parsed.setdefault("technical_issues", [])
-        parsed.setdefault("visual_quality", "unknown")
-        parsed.setdefault("composition_feedback", "")
-        parsed.setdefault("pacing_feedback", "")
-        parsed.setdefault("suggested_improvements", [])
-        parsed.setdefault("summary", "")
-        parsed["_provider"] = f"gemini:{model}"
-        return parsed
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"Gemini returned non-JSON: {cleaned[:500]}") from exc
+    return _parse_json_response(text, f"gemini:{model}")
 
 
 # ---------------------------------------------------------------------------
-# Claude provider (direct URL video understanding, no upload needed)
+# 3. Claude provider (direct URL, no upload needed)
 # ---------------------------------------------------------------------------
 
 
 async def _review_with_claude(video_url: str, brief: str, api_key: str) -> dict:
-    """Send video directly to Claude via URL. No upload needed — Claude fetches the URL."""
+    """Send video directly to Claude via URL — no upload needed."""
     import anthropic
 
     prompt = _QA_PROMPT.format(brief=brief)
@@ -263,19 +389,29 @@ async def _review_with_claude(video_url: str, brief: str, api_key: str) -> dict:
     )
 
     text = resp.content[0].text if resp.content else ""
-    cleaned = text.strip().lstrip("```json").lstrip("```").rstrip("```").strip()
+    return _parse_json_response(text, f"claude:{_CLAUDE_MODEL}")
 
+
+# ---------------------------------------------------------------------------
+# Shared JSON parser
+# ---------------------------------------------------------------------------
+
+
+def _parse_json_response(raw_text: str, provider: str) -> dict:
+    """Parse JSON from model output, with default fallbacks."""
+    cleaned = raw_text.strip().lstrip("```json").lstrip("```").rstrip("```").strip()
     try:
         parsed = json.loads(cleaned)
-        parsed.setdefault("quality_score", 0.0)
-        parsed.setdefault("brief_match_score", 0.0)
-        parsed.setdefault("technical_issues", [])
-        parsed.setdefault("visual_quality", "unknown")
-        parsed.setdefault("composition_feedback", "")
-        parsed.setdefault("pacing_feedback", "")
-        parsed.setdefault("suggested_improvements", [])
-        parsed.setdefault("summary", "")
-        parsed["_provider"] = f"claude:{_CLAUDE_MODEL}"
-        return parsed
     except json.JSONDecodeError as exc:
-        raise ValueError(f"Claude returned non-JSON: {cleaned[:500]}") from exc
+        raise ValueError(f"{provider} returned non-JSON: {cleaned[:500]}") from exc
+
+    parsed.setdefault("quality_score", 0.0)
+    parsed.setdefault("brief_match_score", 0.0)
+    parsed.setdefault("technical_issues", [])
+    parsed.setdefault("visual_quality", "unknown")
+    parsed.setdefault("composition_feedback", "")
+    parsed.setdefault("pacing_feedback", "")
+    parsed.setdefault("suggested_improvements", [])
+    parsed.setdefault("summary", "")
+    parsed["_provider"] = provider
+    return parsed

@@ -1,83 +1,50 @@
 """
-LLM-driven Blender Python (bpy) code generator with sandbox execution and retry loop.
+bpy_codegen.py — LLM-driven Blender Python code generator with VIGA features.
 
-Architecture
-------------
-1. Build a system prompt containing:
-   - Headless Blender constraints (no UI, no modal operators)
-   - bpy API patterns for common tasks (scene setup, cameras, materials, keyframes)
-   - Three complete few-shot examples demonstrating correct headless patterns
-2. Call the active LLM (Gemini/Claude via llm_client.generate_text)
-3. Static pre-validation: syntax check + banned-API scan
-4. Sandbox execution via blender_runner.run_blender_script()
-5. On failure: inject (code + error) back into LLM with web search capability,
-   up to MAX_RETRIES attempts
-6. On final failure: raise RuntimeError
-
-Usage
------
-    from tools.bpy_codegen import generate_and_run_bpy
-
-    output_path = await generate_and_run_bpy(
-        prompt="Create a 3D scene with a glowing cube rotating on a dark background",
-        duration=10.0,
-        style="cinematic",
-        output_path="/tmp/my_scene.mp4",
-    )
-
-Web Search Integration
-----------------------
-When the generated bpy code fails with an unknown error, the LLM can request
-a web search by including the marker:
-    WEB_SEARCH: <natural language query>
-in its response. The retry loop detects this, performs the search via
-DuckDuckGo, and injects the results into the next fix attempt. This allows
-the LLM to look up correct bpy API calls for unfamiliar operations.
+VIGA additions:
+- Multiple candidates with VLM tournament selection (NUM_CANDIDATES env var)
+- Parallel candidate generation and rendering
+- Tournament bracket via Vision Language Model comparison
+- Verifier quality gate (VIGA_ENABLE_VERIFIER env var)
+- Docker sandbox pre-validation (VIGA_ENABLE_DOCKER_SANDBOX env var)
 """
 from __future__ import annotations
 
-import ast
+import asyncio
 import json
 import os
 import re
+import shutil
 import tempfile
 import textwrap
 from typing import Optional
 
 import httpx
 
+from tools.rag_client import store_success, query_similar
+from tools.verifier_loop import run_verifier_loop as _run_verifier_loop
+
 
 MAX_RETRIES = 5
+NUM_CANDIDATES = int(os.getenv("VIGA_NUM_CANDIDATES", "1"))
+USE_VLM_TOURNAMENT = NUM_CANDIDATES > 1
+_VIGA_ENABLE_DOCKER = os.getenv("VIGA_ENABLE_DOCKER_SANDBOX", "").lower() in ("true", "1", "yes")
 
-# Deprecated / wrong-version identifiers for bpy code
-_BANNED_PATTERNS = [
-    "bpy.ops.wm",           # windowing operators (require UI context)
-    "bpy.ops.screen",       # screen operators (require UI context)
-    "bpy.ops.view3d",       # viewport operators (require UI context)
-    "bpy.ops.ed",           # editor operators (require UI context)
-    "bpy.ops.ui",           # UI operators (require UI context)
-    "bpy.app.handlers",     # app handlers (runs indefinitely)
-    "modal",                # modal operators (require UI)
-    "invoke_default",       # UI-only
-    "bpy.ops.object.mode_set",  # mode_set with no context override
-    "CUSTOM_DRIVER",        # drivers won't evaluate in headless
-    "bpy.app.timers",       # timers won't fire in headless
-]
+_BANNED_UI_OPS_NOTICE = (
+    "Do NOT use: bpy.ops.wm.*, bpy.ops.screen.*, bpy.ops.view3d.*, "
+    "bpy.ops.ed.*, bpy.app.handlers, bpy.app.timers, modal operators, "
+    "or any operator that requires a UI context"
+)
 
 _WEB_SEARCH_RE = re.compile(r"WEB_SEARCH:\s*(.+?)(?:\n|$)", re.IGNORECASE)
 
-# ---------------------------------------------------------------------------
-# Web search for LLM debugging
-# ---------------------------------------------------------------------------
 
 async def web_search(query: str, num_results: int = 5) -> str:
-    """Search the web via BrowserBase and return structured results."""
     from tools.browserbase_client import browserbase_search
     return await browserbase_search(query, num_results)
 
 
 async def _execute_web_search(text: str) -> str:
-    """Check if the LLM response contains WEB_SEARCH markers and execute them."""
     results = []
     for match in _WEB_SEARCH_RE.finditer(text):
         query = match.group(1).strip()
@@ -85,10 +52,6 @@ async def _execute_web_search(text: str) -> str:
         results.append(f"Search query: {query}\nResults:\n{result}")
     return "\n\n".join(results)
 
-
-# ---------------------------------------------------------------------------
-# System prompt with few-shot examples
-# ---------------------------------------------------------------------------
 
 _BPY_SYSTEM_INSTRUCTIONS = textwrap.dedent("""\
     Headless Blender constraints (run via `blender --background --python script.py`):
@@ -106,16 +69,11 @@ _BPY_SYSTEM_INSTRUCTIONS = textwrap.dedent("""\
     11. All transforms use bpy.ops.transform.* OR direct obj.location = ...,
         obj.rotation_euler = ..., obj.scale = ...
     12. For rendering: configure scene.render settings, then call
-        bpy.ops.render.render(animation=True, write_still=True).
+        bpy.ops.render.render(animation=True).
 """)
 
 
-def _build_bpy_system_prompt(
-    prompt: str,
-    duration: float,
-    style: str,
-    reference_image_url: str = "",
-) -> str:
+def _build_bpy_system_prompt(prompt: str, duration: float, style: str, reference_image_url: str = "") -> str:
     style_hints = {
         "cinematic": "Use dramatic lighting (area lights with warm/cool contrast), "
                      "depth of field, smooth camera motion, rich materials.",
@@ -145,7 +103,7 @@ def _build_bpy_system_prompt(
     style_guide = style_hints.get(style, style_hints["cinematic"])
 
     return f"""\
-You are an expert Blender Python (bpy) programmer. You write scripts that run
+You are an expert Blender Python (bpy) programmer. BLENDER VERSION: 4.0.2. Use only API features available in Blender 4.0. Do NOT use OPTIX denoiser, scene.cycles.denoiser, or other features added after 4.0. Prefer EEVEE over CYCLES for compatibility. You write scripts that run
 headless (blender --background) and produce 3D rendered video files.
 
 {_BPY_SYSTEM_INSTRUCTIONS}
@@ -155,15 +113,18 @@ Style: {style}
 {style_guide}
 
 ═══ OUTPUT REQUIREMENTS ═══
-• The output path is given as an argument. Write the final render to this path.
+• A JSON file path is passed as sys.argv[-1] (the last element after sys.argv[0]). Load it with: import json; args = json.load(open(sys.argv[-1])); output_path = args["output_path"]. Use this output_path for the render filepath.
 • Configure scene.render.filepath to the output path.
-• Set resolution: bpy.context.scene.render.resolution_x = 1920,
-  bpy.context.scene.render.resolution_y = 1080.
+• Set resolution: bpy.context.scene.render.resolution_x = 854,
+  bpy.context.scene.render.resolution_y = 480.
 • Set fps: bpy.context.scene.render.fps = 60.
+• Set output format to FFMPEG: bpy.context.scene.render.image_settings.file_format = 'FFMPEG'
+• Set FFMPEG codec: bpy.context.scene.render.ffmpeg.format = 'MPEG4'
+• Set H264 codec: bpy.context.scene.render.ffmpeg.codec = 'H264'
 • Render engine: use 'CYCLES' for realism, 'BLENDER_EEVEE' for speed.
 • Set frame_end based on duration: frame_end = int(duration * fps).
 • At the very end, call:
-    bpy.ops.render.render(animation=True, write_still=True)
+    bpy.ops.render.render(animation=True)
 • Print a RESULT line at the very end:
     print(f"RESULT:{{json.dumps({{{{'duration': {duration},
           'resolution': '1920x1080',
@@ -207,11 +168,6 @@ If you are not sure about the correct bpy API to use, you can search the web
 by including the following marker in your response:
     WEB_SEARCH: <natural language query about bpy API>
 
-Example:
-    WEB_SEARCH: bpy how to add keyframe to material node value
-
-The search results will be provided to you before the next attempt.
-
 ═══ YOUR TASK ═══
 {prompt}
 
@@ -220,12 +176,17 @@ Include only the Python code — no markdown fences, no explanation.
 """
 
 
-# ---------------------------------------------------------------------------
-# Static pre-validator
-# ---------------------------------------------------------------------------
-
 def _extract_code(text: str) -> str:
-    """Strip markdown fences if the LLM wrapped the code."""
+    lines = text.split("\n")
+    cleaned = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("```"):
+            continue
+        cleaned.append(line)
+    result = "\n".join(cleaned).strip()
+    if result:
+        return result
     fence = re.search(r"```(?:python)?\n(.*?)```", text, re.DOTALL)
     if fence:
         return fence.group(1).strip()
@@ -233,77 +194,26 @@ def _extract_code(text: str) -> str:
 
 
 def _strip_web_search_markers(text: str) -> str:
-    """Remove WEB_SEARCH markers from the response."""
     return _WEB_SEARCH_RE.sub("", text).strip()
 
 
-def _static_validate(code: str) -> Optional[str]:
-    """Check the generated code before running Blender.
-    Returns an error description string, or None if the code looks OK."""
-    if not code.strip():
-        return "Generated code is empty."
-
-    # 1. Python syntax
-    try:
-        ast.parse(code)
-    except SyntaxError as e:
-        return f"Python SyntaxError on line {e.lineno}: {e.msg}"
-
-    # 2. Banned / wrong-version API patterns
-    for pattern in _BANNED_PATTERNS:
-        if pattern in code:
-            return f"Banned API pattern detected: '{pattern}'. This requires UI context and will fail in headless mode."
-
-    # 3. Required imports
-    if "import bpy" not in code:
-        return "Missing `import bpy` at the top of the script."
-
-    # 4. Render call present
-    if "render" not in code or "animation" not in code:
-        return "Missing render call. Add `bpy.ops.render.render(animation=True, write_still=True)` at the end."
-
-    return None
-
-
-# ---------------------------------------------------------------------------
-# LLM code generation
-# ---------------------------------------------------------------------------
-
 async def _call_llm(prompt: str) -> str:
-    """Generate text via the active LLM provider."""
     from tools.llm_client import generate_text
-    text, _ = await generate_text(
-        prompt,
-        temperature=0.3,
-        max_tokens=8192,
-    )
+    text, _ = await generate_text(prompt, temperature=0.3, max_tokens=8192)
     return text
 
 
-async def _generate_code(
-    prompt: str,
-    duration: float,
-    style: str,
-    reference_image_url: str = "",
-) -> str:
-    """Ask the LLM to produce a Blender Python script."""
+async def _generate_code(prompt: str, duration: float, style: str, reference_image_url: str = "") -> str:
     system_prompt = _build_bpy_system_prompt(prompt, duration, style, reference_image_url)
     raw = await _call_llm(system_prompt)
     return _extract_code(raw)
 
 
-async def _fix_code(
-    code: str,
-    error: str,
-    original_prompt: str,
-    duration: float,
-    style: str,
-    search_results: str = "",
-) -> str:
-    """Ask the LLM to fix failing code given the execution error."""
+async def _fix_code(code: str, error: str, original_prompt: str, duration: float, style: str, search_results: str = "", rag_context: str = "") -> str:
     search_section = ""
     if search_results:
         search_section = f"\n═══ WEB SEARCH RESULTS ═══\n{search_results}\n"
+    rag_section = rag_context if rag_context else ""
 
     fix_prompt = textwrap.dedent(f"""\
         The following Blender Python (bpy) code failed to execute.
@@ -311,6 +221,7 @@ async def _fix_code(
         ═══ ORIGINAL TASK ═══
         {original_prompt}
         {search_section}
+        {rag_section}
         ═══ FAILING CODE ═══
         ```python
         {code}
@@ -324,10 +235,8 @@ async def _fix_code(
         • Keep the overall scene intent the same.
         • If unsure about the correct bpy API, include:
             WEB_SEARCH: <query about the correct API>
-          in your response. Search results will be provided on the next attempt.
         • Do NOT use UI-dependent operators (bpy.ops.wm.*, bpy.ops.screen.*, etc.).
         • If bpy.ops fails, try using direct data access (bpy.data.objects, etc.).
-        • For errors with bpy.ops.object.*, add context_override or use direct attribute setting.
         • Simplify rather than guess — use a simpler approach that is guaranteed to work.
         • Target duration: {duration:.1f} seconds.
         • Output ONLY the corrected Python code. No explanation.
@@ -336,9 +245,150 @@ async def _fix_code(
     return _extract_code(raw)
 
 
-# ---------------------------------------------------------------------------
-# Main entry point
-# ---------------------------------------------------------------------------
+async def _docker_validate(code: str, script_type: str = "blender") -> str | None:
+    """Run the script through Docker sandbox pre-validation. Returns error text
+    if validation failed, None if passed."""
+    from tools.docker_sandbox import validate_in_docker
+    result = await validate_in_docker(code, script_type, timeout=15)
+    if not result["passed"]:
+        logs = result.get("logs", "")
+        error = result.get("error", "Docker sandbox validation failed")
+        # Keep logs under 3000 chars to avoid context overflow
+        if len(logs) > 3000:
+            logs = logs[-3000:]
+        return f"[Docker sandbox pre-check] {error}\nLogs:\n{logs}"
+    return None
+
+
+async def _render_single(prompt: str, duration: float, style: str, output_path: str, reference_image_url: str, attempt: int) -> dict:
+    """Generate code and render a single candidate. Returns dict with result or error."""
+    from tools.blender_runner import run_blender_script
+
+    code = await _generate_code(prompt, duration, style, reference_image_url)
+    search_results = await _execute_web_search(code)
+    if search_results:
+        code = _strip_web_search_markers(code)
+    code = _extract_code(code)
+
+    if _VIGA_ENABLE_DOCKER:
+        dock_err = await _docker_validate(code)
+        if dock_err:
+            return {"error": dock_err, "code": code}
+
+    with tempfile.NamedTemporaryFile(suffix=".py", prefix=f"bpy_candidate_{attempt}_", delete=False, mode="w") as f:
+        f.write(code)
+        script_path = f.name
+
+    try:
+        args = {"prompt": prompt[:200], "duration": duration, "style": style, "output_path": output_path}
+        if reference_image_url:
+            args["reference_image_url"] = reference_image_url
+        result = await run_blender_script(script_path=script_path, args=args, timeout=600)
+        output = result.get("output_path", output_path)
+        if os.path.exists(output):
+            return {"path": output, "code": code, "score": None}
+        return {"error": "no output file", "code": code}
+    except RuntimeError as e:
+        return {"error": str(e)[-2000:], "code": code}
+    finally:
+        try:
+            os.unlink(script_path)
+        except OSError:
+            pass
+
+
+async def _run_vlm_tournament(results: list[dict], prompt: str) -> int:
+    from tools.vision_tools import compare_render_to_reference
+
+    valid = [(i, r) for i, r in enumerate(results) if "path" in r and os.path.exists(r["path"])]
+    if len(valid) <= 1:
+        return valid[0][0] if valid else 0
+
+    candidates = [(idx, r["path"]) for idx, r in valid]
+    while len(candidates) > 1:
+        next_round = []
+        for i in range(0, len(candidates), 2):
+            if i + 1 < len(candidates):
+                idx_a, path_a = candidates[i]
+                idx_b, path_b = candidates[i + 1]
+                try:
+                    comparison = compare_render_to_reference(
+                        render_path=path_b, reference_path_or_url=path_a, prompt_context=prompt,
+                    )
+                    score_a = comparison.get("match_score", 0.5)
+                    comparison_rev = compare_render_to_reference(
+                        render_path=path_a, reference_path_or_url=path_b, prompt_context=prompt,
+                    )
+                    score_b = comparison_rev.get("match_score", 0.5)
+                    winner = idx_a if score_a >= score_b else idx_b
+                except Exception:
+                    winner = idx_a
+                next_round.append((winner, path_a if winner == idx_a else path_b))
+            else:
+                next_round.append(candidates[i])
+        candidates = next_round
+    return candidates[0][0] if candidates else 0
+
+
+async def _retry_render_single(prompt: str, duration: float, style: str, output_path: str, reference_image_url: str) -> tuple[str, str]:
+    """Standard single-candidate approach with retry loop. Returns (output_path, code)."""
+    from tools.blender_runner import run_blender_script
+
+    code = ""
+    last_error = ""
+    search_results = ""
+
+    for attempt in range(1, MAX_RETRIES + 1):
+        if attempt == 1:
+            code = await _generate_code(prompt, duration, style, reference_image_url)
+        else:
+            rag_context = await query_similar("bpy", last_error, prompt)
+            code = await _fix_code(code, last_error, prompt, duration, style, search_results, rag_context)
+
+        search_results = await _execute_web_search(code)
+        if search_results:
+            code = _strip_web_search_markers(code)
+
+        # Docker sandbox pre-validation (fast, catches import/API errors)
+        if _VIGA_ENABLE_DOCKER:
+            dock_err = await _docker_validate(code)
+            if dock_err:
+                last_error = dock_err
+                if attempt == MAX_RETRIES:
+                    raise RuntimeError(
+                        f"bpy code failed Docker sandbox validation after {MAX_RETRIES} attempts.\n"
+                        f"Last error:\n{last_error}"
+                    )
+                continue
+
+        with tempfile.NamedTemporaryFile(suffix=".py", prefix=f"bpy_gen_{attempt}_", delete=False, mode="w") as f:
+            f.write(code)
+            script_path = f.name
+
+        try:
+            args = {"prompt": prompt[:200], "duration": duration, "style": style, "output_path": output_path}
+            if reference_image_url:
+                args["reference_image_url"] = reference_image_url
+            result = await run_blender_script(script_path=script_path, args=args, timeout=600)
+            await store_success("bpy", code, prompt)
+            try:
+                os.unlink(script_path)
+            except OSError:
+                pass
+            return (result.get("output_path", output_path), code)
+        except RuntimeError as e:
+            last_error = str(e)[-3000:]
+            try:
+                os.unlink(script_path)
+            except OSError:
+                pass
+            if attempt == MAX_RETRIES:
+                raise RuntimeError(
+                    f"LLM-generated bpy code failed after {MAX_RETRIES} attempts. Last error:\n{last_error}"
+                ) from e
+
+    raise RuntimeError("_retry_render_single: unexpected exit")
+
 
 async def generate_and_run_bpy(
     prompt: str,
@@ -348,97 +398,48 @@ async def generate_and_run_bpy(
     reference_image_url: str = "",
     **extra_args,
 ) -> str:
-    """
-    Generate a Blender scene from a natural language description and render it.
-
-    The LLM generates raw bpy Python code, validates it statically, and runs
-    it in headless Blender. On failure, it retries with LLM-driven fixes —
-    optionally searching the web for the correct API calls.
-
-    Args:
-        prompt:             Natural language description of the 3D scene.
-        duration:           Target clip duration in seconds.
-        style:              Visual style ("cinematic"|"minimal"|"energetic"|"calm").
-        output_path:        Destination file path (auto-generated if None).
-        reference_image_url: Optional reference image URL for style guidance.
-
-    Returns:
-        Absolute path to the rendered MP4 file.
-
-    Raises:
-        RuntimeError: If all retries are exhausted.
-    """
-    from tools.blender_runner import run_blender_script
-
     if output_path is None:
         import uuid
         output_path = f"/tmp/bpy_gen_{uuid.uuid4().hex}.mp4"
 
-    code: str = ""
-    last_error: str = ""
-    search_results: str = ""
+    async def _render_bpy(prompt: str, **kwargs) -> tuple[str, str]:
+        if not USE_VLM_TOURNAMENT:
+            return await _retry_render_single(prompt, duration, style, output_path, reference_image_url)
 
-    for attempt in range(1, MAX_RETRIES + 1):
-        # ── generate / fix ────────────────────────────────────────────────
-        if attempt == 1:
-            code = await _generate_code(prompt, duration, style, reference_image_url)
-        else:
-            code = await _fix_code(code, last_error, prompt, duration, style, search_results)
-
-        # ── check for web search markers ──────────────────────────────────
-        search_results = await _execute_web_search(code)
-        if search_results:
-            # The LLM requested web search — strip markers, validate, retry
-            code = _strip_web_search_markers(code)
-
-        # ── static validate ───────────────────────────────────────────────
-        static_err = _static_validate(code)
-        if static_err:
-            last_error = f"Static validation failed: {static_err}"
-            continue
-
-        # ── write to temp file ────────────────────────────────────────────
-        with tempfile.NamedTemporaryFile(
-            suffix=".py",
-            prefix=f"bpy_gen_{attempt}_",
-            delete=False,
-            mode="w",
-        ) as f:
-            f.write(code)
-            script_path = f.name
-
-        # ── run blender ───────────────────────────────────────────────────
+        candidate_dir = tempfile.mkdtemp(prefix="bpy_candidates_")
         try:
-            args = {
-                "prompt": prompt[:200],
-                "duration": duration,
-                "style": style,
-                "output_path": output_path,
-            }
-            if reference_image_url:
-                args["reference_image_url"] = reference_image_url
+            candidate_paths = [
+                os.path.join(candidate_dir, f"candidate_{i}.mp4")
+                for i in range(NUM_CANDIDATES)
+            ]
+            tasks = [
+                _render_single(prompt, duration, style, cp, reference_image_url, i + 1)
+                for i, cp in enumerate(candidate_paths)
+            ]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            processed = []
+            for i, r in enumerate(results):
+                if isinstance(r, Exception):
+                    processed.append({"error": str(r), "code": ""})
+                else:
+                    processed.append(r)
+            winner_idx = await _run_vlm_tournament(processed, prompt)
+            winner = processed[winner_idx]
+            if "path" in winner and os.path.exists(winner["path"]):
+                shutil.copy2(winner["path"], output_path)
+                return (output_path, winner.get("code", ""))
+            return await _retry_render_single(prompt, duration, style, output_path, reference_image_url)
+        finally:
+            shutil.rmtree(candidate_dir, ignore_errors=True)
 
-            result = await run_blender_script(
-                script_path=script_path,
-                args=args,
-                timeout=600,
-            )
-            # success
-            try:
-                os.unlink(script_path)
-            except OSError:
-                pass
-            return result.get("output_path", output_path)
-
-        except RuntimeError as e:
-            last_error = str(e)[-3000:]
-            try:
-                os.unlink(script_path)
-            except OSError:
-                pass
-
-            if attempt == MAX_RETRIES:
-                raise RuntimeError(
-                    f"LLM-generated bpy code failed after {MAX_RETRIES} attempts. "
-                    f"Last error:\n{last_error}"
-                ) from e
+    final_path = await _run_verifier_loop(
+        render_fn=_render_bpy,
+        prompt=prompt,
+        code="",
+        render_kwargs={
+            "duration": duration,
+            "style": style,
+            "reference_image_url": reference_image_url,
+        },
+    )
+    return final_path

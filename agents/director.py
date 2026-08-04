@@ -25,6 +25,7 @@ Usage:
     # result = {"assets": [{"tool": str, "url": str}, ...], "summary": str, "provider": str}
 """
 
+import datetime
 import json
 import os
 import uuid
@@ -37,6 +38,23 @@ from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
 
 from tools.llm_client import get_chat_model, active_provider
+from tools.progress_store import record_job_progress
+
+# ---------------------------------------------------------------------------
+# Global cancellation set — shared across graph nodes and server.py
+# ---------------------------------------------------------------------------
+
+_cancelled_jobs: set[str] = set()
+
+
+def cancel_job(job_id: str) -> None:
+    """Mark a job as cancelled. Graph nodes check this at each step."""
+    _cancelled_jobs.add(job_id)
+
+
+def is_job_cancelled(job_id: str) -> bool:
+    """Check if a job has been cancelled."""
+    return job_id in _cancelled_jobs
 
 # ---------------------------------------------------------------------------
 # LangChain tool wrappers (calls the consolidated codegen directly)
@@ -162,9 +180,41 @@ async def manim_execute_script(
     return json.dumps(response)
 
 
+@tool
+async def review_rendered_video(
+    video_url: str,
+    brief: str,
+) -> str:
+    """
+    Review a rendered video against its creative brief for quality assurance.
+
+    Uses Gemini's native video understanding to evaluate composition, pacing,
+    technical quality, and alignment with the original brief. Call this after
+    any blender_execute_bpy_script or manim_execute_script call returns a
+    video_url to verify the output meets expectations.
+
+    If the review returns quality_score < 0.6 or brief_match_score < 0.6,
+    re-run the render with the suggested improvements.
+
+    Args:
+        video_url: The video_url from a previous render result.
+        brief: The original prompt/description used to create the video.
+
+    Returns JSON: {"quality_score": float, "brief_match_score": float,
+                   "technical_issues": [str], "visual_quality": str,
+                   "composition_feedback": str, "pacing_feedback": str,
+                   "suggested_improvements": [str], "summary": str}
+    """
+    from tools.video_review import review_video as _review
+
+    result = await _review(video_url=video_url, brief=brief)
+    return json.dumps(result)
+
+
 TOOLS = [
     blender_execute_bpy_script,
     manim_execute_script,
+    review_rendered_video,
 ]
 
 # ---------------------------------------------------------------------------
@@ -175,6 +225,34 @@ class DirectorState(TypedDict):
     messages: Annotated[list, add_messages]
     assets: list[dict]      # accumulated {"tool": str, "url": str} entries
     provider: str           # which LLM is driving this run
+    job_id: str             # job_id for progress tracking
+    retry_count: int        # re-edit attempts (hard loop, max max_retries)
+    max_retries: int        # max re-render attempts when review score < 0.6
+    cancelled: bool         # set to True to stop execution early
+    needs_rerender: bool    # set by review_node when score < 0.6, consumed by review_decision
+
+
+# ---------------------------------------------------------------------------
+# Progress helper
+# ---------------------------------------------------------------------------
+
+async def _record(state: DirectorState, stage: str, message: str, details: dict | None = None):
+    """Record a progress event if job_id is set."""
+    jid = state.get("job_id", "")
+    if not jid:
+        return
+    try:
+        await record_job_progress(
+            job_id=jid,
+            workflow_thread_id=jid,
+            tool="run_director",
+            state="running" if stage != "completed" else "completed",
+            stage=stage,
+            message=message,
+            details=details or {},
+        )
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -182,18 +260,23 @@ class DirectorState(TypedDict):
 # ---------------------------------------------------------------------------
 
 _SYSTEM = (
-    "You are a professional video production director AI with access to 2 consolidated tools "
-    "that cover ALL 3D Blender rendering and ALL Manim animations:\n\n"
+    "You are a professional video production director AI with access to 3 tools "
+    "that cover ALL 3D Blender rendering, ALL Manim animations, and quality review:\n\n"
     "1. blender_execute_bpy_script — for EVERYTHING 3D/Blender: scenes, thumbnails, title cards, "
     "lower-thirds, UI device mockups, logo reveals, particle effects, abstract backgrounds, "
     "countdowns, camera fly-throughs, toon scenes, grease pencil, geometry scattering, etc.\n"
     "2. manim_execute_script — for EVERYTHING Manim: math equations, data charts (bar/line/pie/scatter), "
     "flowcharts, 3D math, code animations, timelines, network graphs, text animations, "
-    "vector fields, matrix transforms, polar graphs, geometry proofs, etc.\n\n"
+    "vector fields, matrix transforms, polar graphs, geometry proofs, etc.\n"
+    "3. review_rendered_video — quality-assurance review of any rendered video. Pass the video_url "
+    "from the render result and the original brief. Returns a quality score (0-1) and suggested "
+    "improvements.\n\n"
     "Given a creative brief, decide which tools to call and with what parameters to produce "
     "the best asset package. Call tools in a logical sequence — title cards before scenes, "
     "lower-thirds with the host's name when mentioned, thumbnails when the channel is mentioned, "
     "device mockups when showcasing an app or website. "
+    "After each render, call review_rendered_video to check quality. If the score is below 0.6, "
+    "re-render with the suggested improvements. "
     "After all tools have finished, write a brief summary of what was produced."
 )
 
@@ -201,28 +284,56 @@ _SYSTEM = (
 # Graph nodes
 # ---------------------------------------------------------------------------
 
-def agent_node(state: DirectorState) -> dict:
+async def agent_node(state: DirectorState) -> dict:
+    # Check cancellation before doing any work
+    if state.get("cancelled", False) or is_job_cancelled(state.get("job_id", "")):
+        await _record(state, "cancelled", "Director cancelled by user")
+        return {"messages": [AIMessage(content="Director execution cancelled by user.")],
+                "assets": state.get("assets", [])}
+
     provider = state.get("provider") or active_provider()
+    await _record(state, "agent_planning", "Analyzing brief and planning scenes...")
+
     llm = get_chat_model(
         temperature=0.7,
         max_tokens=4096,
         provider=provider,
     ).bind_tools(TOOLS)
 
-    # Use proper SystemMessage so both Claude and Gemini receive it correctly
     messages = state["messages"]
     full_messages = [SystemMessage(content=_SYSTEM)] + list(messages)
 
     response = llm.invoke(full_messages)
+    tool_count = len(response.tool_calls) if hasattr(response, "tool_calls") and response.tool_calls else 0
+    await _record(state, "agent_planned", f"Planned {tool_count} tool calls", {
+        "tool_calls": [t.name for t in response.tool_calls] if hasattr(response, "tool_calls") and response.tool_calls else [],
+    })
     return {"messages": [response], "assets": state.get("assets", []), "provider": provider}
 
 
-def tools_node(state: DirectorState) -> dict:
+async def tools_node(state: DirectorState) -> dict:
     """Run tool calls and harvest asset URLs from results."""
+    # Check cancellation before executing tools
+    if state.get("cancelled", False) or is_job_cancelled(state.get("job_id", "")):
+        await _record(state, "cancelled", "Director cancelled by user")
+        return {"messages": [AIMessage(content="Director execution cancelled by user.")],
+                "assets": state.get("assets", [])}
+
     node = ToolNode(TOOLS)
+
+    tool_names = []
+    last = state["messages"][-1]
+    if hasattr(last, "tool_calls") and last.tool_calls:
+        for tc in last.tool_calls:
+            name = tc.get("name") if isinstance(tc, dict) else tc.name
+            tool_names.append(name)
+    tool_label = ", ".join(tool_names) if tool_names else "tools"
+    await _record(state, "rendering", f"Rendering: {tool_label}...")
+
     result = node.invoke(state)
 
     assets = list(state.get("assets", []))
+    asset_urls = []
     for msg in result.get("messages", []):
         if isinstance(msg, ToolMessage):
             try:
@@ -230,8 +341,14 @@ def tools_node(state: DirectorState) -> dict:
                 for url_key in ("video_url", "image_url"):
                     if url := data.get(url_key):
                         assets.append({"tool": msg.name, "url": url})
+                        asset_urls.append(url)
             except (json.JSONDecodeError, AttributeError):
                 pass
+
+    await _record(state, "rendered", f"Completed {tool_label}", {
+        "assets_created": len(asset_urls),
+        "tool": tool_label,
+    })
 
     return {
         "messages": result.get("messages", []),
@@ -240,10 +357,76 @@ def tools_node(state: DirectorState) -> dict:
     }
 
 
+async def review_node(state: DirectorState) -> dict:
+    """
+    Hard re-edit loop: check review_rendered_video results and force a
+    re-render if quality_score or brief_match_score < 0.6.
+    Up to max_retries (default 3) attempts, then give up and proceed.
+    """
+    result: dict = {"needs_rerender": False}
+
+    # Only act if the last message is a review tool result
+    last = state["messages"][-1]
+    name = last.name if hasattr(last, "name") else ""
+    if not (isinstance(last, ToolMessage) and name == "review_rendered_video"):
+        return result
+
+    try:
+        data = json.loads(last.content)
+    except (json.JSONDecodeError, AttributeError):
+        return result
+
+    quality = data.get("quality_score", 1.0)
+    brief_match = data.get("brief_match_score", 1.0)
+    score = min(quality, brief_match)
+
+    retry_count = state.get("retry_count", 0)
+    max_retries = state.get("max_retries", 3)
+
+    if score >= 0.6:
+        return result
+
+    if retry_count >= max_retries:
+        await _record(state, "max_retries_reached",
+                      f"Max re-edit attempts ({max_retries}) reached. Score: {score:.2f}. Proceeding with current output.",
+                      {"score": score, "retry_count": retry_count})
+        return result
+
+    improvements = data.get("suggested_improvements", [])
+    improvement_text = "\n- ".join(improvements) if improvements else "General quality improvements"
+
+    await _record(state, "re-edit",
+                  f"Review score {score:.2f} below 0.6. Re-rendering (attempt {retry_count + 1}/{max_retries})...",
+                  {"score": score, "retry_count": retry_count + 1, "improvements": improvements})
+
+    feedback = HumanMessage(
+        content=f"RE-EDIT REQUIRED: The previous render scored {score:.2f}/1.0 (below 0.6 threshold). "
+                f"This is attempt {retry_count + 1} of {max_retries}. "
+                f"Re-render with these specific improvements:\n- {improvement_text}\n\n"
+                f"Focus on fixing the identified issues. Do NOT repeat the same mistakes."
+    )
+
+    result["messages"] = [feedback]
+    result["retry_count"] = retry_count + 1
+    result["needs_rerender"] = True
+    return result
+
+
 def should_continue(state: DirectorState) -> str:
+    if state.get("cancelled", False) or is_job_cancelled(state.get("job_id", "")):
+        return END
     last = state["messages"][-1]
     if hasattr(last, "tool_calls") and last.tool_calls:
         return "tools"
+    return END
+
+
+def review_decision(state: DirectorState) -> str:
+    """After review, go back to agent for re-render or finish."""
+    if state.get("cancelled", False) or is_job_cancelled(state.get("job_id", "")):
+        return END
+    if state.get("needs_rerender", False):
+        return "agent"
     return END
 
 
@@ -255,9 +438,11 @@ def build_director_graph():
     g = StateGraph(DirectorState)
     g.add_node("agent", agent_node)
     g.add_node("tools", tools_node)
+    g.add_node("review", review_node)
     g.set_entry_point("agent")
     g.add_conditional_edges("agent", should_continue, {"tools": "tools", END: END})
-    g.add_edge("tools", "agent")
+    g.add_edge("tools", "review")
+    g.add_conditional_edges("review", review_decision, {"agent": "agent", END: END})
     return g.compile()
 
 
@@ -265,7 +450,7 @@ def build_director_graph():
 # Public API
 # ---------------------------------------------------------------------------
 
-async def run_director(brief: str, provider: str | None = None) -> dict:
+async def run_director(brief: str, provider: str | None = None, job_id: str = "") -> dict:
     """
     Run the director agent with a creative brief.
 
@@ -273,6 +458,8 @@ async def run_director(brief: str, provider: str | None = None) -> dict:
         brief:    Natural language description of what to produce.
         provider: Override LLM_PROVIDER for this run.
                   "gemini" | "claude" | "auto" | None (use env default).
+        job_id:   Optional job_id for progress tracking. If empty, events
+                  are not recorded.
 
     Returns:
         {
@@ -288,7 +475,26 @@ async def run_director(brief: str, provider: str | None = None) -> dict:
         "messages": [HumanMessage(content=brief)],
         "assets": [],
         "provider": resolved,
+        "job_id": job_id,
+        "retry_count": 0,
+        "max_retries": 3,
+        "cancelled": False,
+        "needs_rerender": False,
     }
+
+    if job_id:
+        try:
+            await record_job_progress(
+                job_id=job_id,
+                workflow_thread_id=job_id,
+                tool="run_director",
+                state="running",
+                stage="starting",
+                message="Director agent started",
+                details={"brief": brief[:200], "provider": resolved},
+            )
+        except Exception:
+            pass
 
     final = await graph.ainvoke(init)
 
@@ -298,8 +504,29 @@ async def run_director(brief: str, provider: str | None = None) -> dict:
             summary = msg.content if isinstance(msg.content, str) else str(msg.content)
             break
 
-    return {
+    result = {
         "assets": final["assets"],
         "summary": summary,
         "provider": final.get("provider", resolved),
     }
+
+    # Clean up cancellation flag
+    _cancelled_jobs.discard(job_id)
+
+    if job_id:
+        try:
+            await record_job_progress(
+                job_id=job_id,
+                workflow_thread_id=job_id,
+                tool="run_director",
+                state="completed",
+                stage="completed",
+                message="Director agent completed",
+                details={"asset_count": len(final["assets"])},
+                result=result,
+                finished_at=datetime.datetime.now(datetime.timezone.utc),
+            )
+        except Exception:
+            pass
+
+    return result

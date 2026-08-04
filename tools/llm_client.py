@@ -78,10 +78,12 @@ _NVIDIA_NIM_TIMEOUT_SECONDS = float(os.getenv("NVIDIA_NIM_TIMEOUT_SECONDS", "75"
 _DEEPSEEK_BASE_URL = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
 _DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-v4-flash")
 _DEEPSEEK_TIMEOUT_SECONDS = float(os.getenv("DEEPSEEK_TIMEOUT_SECONDS", "60"))
-_OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://172.31.42.118:11434")
+_OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://172.31.43.45:11434")
 _OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "gemma4:12b")
 _OLLAMA_TIMEOUT_SECONDS = float(os.getenv("OLLAMA_TIMEOUT_SECONDS", "120"))
-_QWEEN_MODEL = os.getenv("QWEEN_MODEL", "qwen3:4b")
+_BEDROCK_MODEL = os.getenv("BEDROCK_MODEL_ID", "us.meta.llama4-maverick-17b-instruct-v1:0")
+_BEDROCK_TIMEOUT_SECONDS = float(os.getenv("BEDROCK_TIMEOUT_SECONDS", "120"))
+_QWEEN_MODEL = os.getenv("QWEEN_MODEL", "gemma4:12b")
 _CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-opus-4-6")
 _OLLAMA_EMBEDDING_MODEL = os.getenv("OLLAMA_EMBEDDING_MODEL", "qwen3-embedding:4b")
 _PROVIDER     = os.getenv("LLM_PROVIDER", "auto").lower()  # "qwen" | "ollama" | "gemini" | "nvidia" | "gemma" | "deepseek" | "claude" | "auto"
@@ -114,6 +116,10 @@ def _has_nvidia() -> bool:
 def _has_deepseek() -> bool:
     return bool(os.getenv("DEEPSEEK_API_KEY"))
 
+
+
+def _has_bedrock() -> bool:
+    return bool(os.getenv("AWS_ACCESS_KEY_ID")) and bool(os.getenv("AWS_SECRET_ACCESS_KEY"))
 
 def _resolved_provider() -> str:
     """Return the provider that will actually be used given current env."""
@@ -151,12 +157,21 @@ def _resolved_provider() -> str:
             )
         return "deepseek"
 
-    # auto — prefer Qwen (lightweight, fast), then Ollama (self-hosted, free),
+    if _PROVIDER == "bedrock":
+        if not _has_bedrock():
+            raise RuntimeError(
+                "LLM_PROVIDER=bedrock but AWS_ACCESS_KEY_ID is not set"
+            )
+        return "bedrock"
+
+    # auto — prefer Ollama/gemma4:12b (multimodal vision), then Qwen (deprecated),
     # then Gemini, then NVIDIA, then DeepSeek, then Claude
-    if _has_qwen():
-        return "qwen"
     if _has_ollama():
         return "ollama"
+    if _has_bedrock():
+        return "bedrock"
+    if _has_qwen():
+        return "qwen"
     if _has_gemini():
         return "gemini"
     if _has_nvidia():
@@ -194,26 +209,36 @@ def get_chat_model(
     resolved = _resolve(provider)
 
     if resolved == "qwen":
-        from langchain_openai import ChatOpenAI
-        return ChatOpenAI(
-            model=_QWEEN_MODEL,
-            api_key="ollama",  # ignored by Ollama but required by ChatOpenAI
-            base_url=_OLLAMA_BASE_URL,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            timeout=_OLLAMA_TIMEOUT_SECONDS,
-        )
+        try:
+            from langchain_openai import ChatOpenAI
+            return ChatOpenAI(
+                model=_QWEEN_MODEL,
+                api_key="ollama",  # ignored by Ollama but required by ChatOpenAI
+                base_url=_OLLAMA_BASE_URL,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                timeout=_OLLAMA_TIMEOUT_SECONDS,
+            )
+        except Exception:
+            if _PROVIDER != "auto" or not _has_gemini():
+                raise
+            resolved = "gemini"
 
     if resolved == "ollama":
-        from langchain_openai import ChatOpenAI
-        return ChatOpenAI(
-            model=_OLLAMA_MODEL,
-            api_key="ollama",  # ignored by Ollama but required by ChatOpenAI
-            base_url=_OLLAMA_BASE_URL,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            timeout=_OLLAMA_TIMEOUT_SECONDS,
-        )
+        try:
+            from langchain_openai import ChatOpenAI
+            return ChatOpenAI(
+                model=_OLLAMA_MODEL,
+                api_key="ollama",  # ignored by Ollama but required by ChatOpenAI
+                base_url=_OLLAMA_BASE_URL,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                timeout=_OLLAMA_TIMEOUT_SECONDS,
+            )
+        except Exception:
+            if _PROVIDER != "auto" or not _has_gemini():
+                raise
+            resolved = "gemini"
 
     if resolved == "gemini":
         try:
@@ -301,6 +326,11 @@ def _resolve(override: str | None) -> str:
         if not _has_deepseek():
             raise RuntimeError("provider='deepseek' but DEEPSEEK_API_KEY is not set")
         return "deepseek"
+    if override == "bedrock":
+        if not _has_bedrock():
+            raise RuntimeError("provider=bedrock but AWS_ACCESS_KEY_ID is not set")
+        return "bedrock"
+
     # "auto"
     return _resolved_provider()
 
@@ -365,6 +395,7 @@ async def _generate_text_with_ollama_model(
         "think": False,
         "options": {
             "num_predict": max_tokens,
+            "num_ctx": 24576,
         },
         "stream": False,
     }
@@ -497,6 +528,37 @@ async def _generate_text_with_deepseek(
         raise RuntimeError(f"DeepSeek returned no content: {data}") from exc
 
 
+async def _generate_text_with_bedrock(
+    *,
+    prompt: str,
+    temperature: float,
+    max_tokens: int,
+) -> str:
+    import boto3
+
+    model = _BEDROCK_MODEL
+    region = os.getenv("AWS_REGION", "us-east-1")
+
+    def _converse():
+        client = boto3.client(
+            "bedrock-runtime",
+            region_name=region,
+            aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
+            aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
+        )
+        response = client.converse(
+            modelId=model,
+            messages=[{"role": "user", "content": [{"text": prompt}]}],
+            inferenceConfig={
+                "temperature": temperature,
+                "maxTokens": max_tokens,
+            },
+        )
+        return response["output"]["message"]["content"][0]["text"]
+
+    return await asyncio.to_thread(_converse)
+
+
 async def _generate_text_with_gemini_model(
     *,
     model: str,
@@ -510,7 +572,8 @@ async def _generate_text_with_gemini_model(
         api_key=os.getenv("VIDEO_GEMINI_API_KEY") or os.getenv("GEMINI_API_KEY")
     )
 
-    response = client.models.generate_content(
+    import asyncio
+    response = await asyncio.to_thread(client.models.generate_content,
         model=model,
         contents=prompt,
         config=google_genai.types.GenerateContentConfig(
@@ -586,6 +649,27 @@ async def generate_text(
                 break
         if _PROVIDER != "auto":
             raise RuntimeError("; ".join(ollama_errors))
+        # fall through to Bedrock in auto mode
+
+        resolved = "bedrock"
+    if resolved == "bedrock":
+        bedrock_errors: list[str] = []
+        for attempt in range(1, 4):
+            try:
+                text = await _generate_text_with_bedrock(
+                    prompt=prompt,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                )
+                return text, "bedrock"
+            except Exception as bedrock_err:
+                bedrock_errors.append(f"attempt {attempt}: {bedrock_err}")
+                if attempt < 3:
+                    await asyncio.sleep(min(10, 2 * attempt))
+                    continue
+                break
+        if _PROVIDER != "auto":
+            raise RuntimeError("; ".join(bedrock_errors))
         # fall through to Gemini in auto mode
 
         resolved = "gemini"

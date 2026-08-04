@@ -1,265 +1,515 @@
-"""
-Async Job Queue — Phase 5
-
-Allows callers to submit long-running Blender/Manim jobs asynchronously and
-poll for results.  The queue runs entirely in-process using asyncio — no Redis
-or external broker required.
-
-Usage (from server.py):
-    from tools.job_queue import queue, JobStatus
-
-    job_id = await queue.submit("blender_generate_scene", {"prompt": "...", ...})
-    # ... later ...
-    status = queue.get(job_id)   # returns JobStatus
-
-REST endpoints (wired in server.py):
-    POST /api/jobs           — submit a job, returns {"job_id": str}
-    GET  /api/jobs/{job_id}  — poll job status
-"""
-
-from __future__ import annotations
-
 import asyncio
 import inspect
+import json
+import os
 import uuid
-from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Callable, Coroutine
+from dataclasses import dataclass, field, asdict
+from typing import Any, Awaitable, Callable, Optional, Dict
+from decimal import Decimal
 
-from tools.progress_store import record_job_progress
-
-
-class State(str, Enum):
-    PENDING   = "pending"
-    RUNNING   = "running"
-    COMPLETED = "completed"
-    FAILED    = "failed"
+import boto3
+from pydantic import BaseModel, Field
 
 
-@dataclass
-class JobStatus:
-    job_id:    str
-    tool:      str
-    workflow_thread_id: str = ""
-    state:     State          = State.PENDING
-    result:    dict | None    = None
-    error:     str            = ""
-    created_at: str           = field(default_factory=lambda: _now())
-    started_at: str           = ""
-    finished_at: str          = ""
+# ---------------------------------------------------------------------------
+# AWS clients (lazy — first call to any SQS/DDB function creates them)
+# ---------------------------------------------------------------------------
 
-    def to_dict(self) -> dict:
-        return {
-            "job_id":      self.job_id,
-            "tool":        self.tool,
-            "workflow_thread_id": self.workflow_thread_id,
-            "state":       self.state.value,
-            "result":      self.result,
-            "error":       self.error,
-            "created_at":  self.created_at,
-            "started_at":  self.started_at,
-            "finished_at": self.finished_at,
-        }
+def _aws_session():
+    from boto3 import Session
+    return Session(
+        aws_access_key_id=os.environ.get("AWS_ACCESS_KEY_ID"),
+        aws_secret_access_key=os.environ.get("AWS_SECRET_ACCESS_KEY"),
+        region_name=os.environ.get("AWS_REGION", "us-east-1"),
+    )
 
+
+_sqs = None
+_table = None
+
+
+def _lazy_aws():
+    global _sqs, _table
+    if _sqs is not None:
+        return
+    session = _aws_session()
+    _sqs = session.client("sqs")
+    _table = session.resource("dynamodb").Table(os.environ["DYNAMODB_TABLE"])
+
+
+SQS_QUEUE_URL = os.environ["SQS_QUEUE_URL"]
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _make_job_id() -> str:
+    return uuid.uuid4().hex[:24]
+
+
 # ---------------------------------------------------------------------------
-# Queue
+# State machine
+# ---------------------------------------------------------------------------
+
+class State(str, Enum):
+    PENDING = "pending"
+    QUEUED = "queued"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+    RECOVERED = "recovered"
+
+
+# ---------------------------------------------------------------------------
+# Job status data model (stored in DynamoDB)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class JobStatus:
+    job_id: str
+    tool: str = ""
+    state: str = State.PENDING.value
+    args: dict = field(default_factory=dict)
+    result: Any = None
+    error: str = ""
+    created_at: str = ""
+    queued_at: str = ""
+    started_at: str = ""
+    finished_at: str = ""
+    recoveries: int = 0
+    workflow_thread_id: str = ""
+
+    def to_dict(self) -> dict:
+        d = asdict(self)
+        d["state"] = self.state
+        return d
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "JobStatus":
+        return cls(**{k: v for k, v in d.items() if k in cls.__dataclass_fields__})
+
+
+# ---------------------------------------------------------------------------
+# Async wrappers for SQS + DynamoDB (called from asyncio worker tasks)
+# ---------------------------------------------------------------------------
+
+def _put_status_sync(status: JobStatus) -> None:
+    _lazy_aws()
+    item = status.to_dict()
+    if isinstance(item.get("result"), dict) and item["result"] is not None:
+        item["result"] = json.dumps(item["result"])
+    item = _convert_to_ddb_types(item)
+    _table.put_item(Item=item)
+
+
+async def _async_put_status(status: JobStatus) -> None:
+    await asyncio.to_thread(_put_status_sync, status)
+
+
+def _get_status_sync(job_id: str) -> Optional[JobStatus]:
+    _lazy_aws()
+    resp = _table.get_item(Key={"job_id": job_id})
+    item = resp.get("Item")
+    if item is None:
+        return None
+    # Convert DynamoDB Decimals to native types
+    item = _convert_decimals(item)
+    if isinstance(item.get("result"), str):
+        try:
+            item["result"] = json.loads(item["result"])
+        except (json.JSONDecodeError, TypeError):
+            pass
+    return JobStatus.from_dict(item)
+
+
+def _convert_decimals(obj):
+    """Recursively convert DynamoDB Decimal types to int/float."""
+    if isinstance(obj, Decimal):
+        return int(obj) if obj % 1 == 0 else float(obj)
+    if isinstance(obj, dict):
+        return {k: _convert_decimals(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_convert_decimals(v) for v in obj]
+    return obj
+
+
+async def _async_get_status(job_id: str) -> Optional[JobStatus]:
+    return await asyncio.to_thread(_get_status_sync, job_id)
+
+
+def _convert_to_ddb_types(obj):
+    """Convert floats to Decimal for DynamoDB compatibility."""
+    from decimal import Decimal
+    if isinstance(obj, float):
+        return Decimal(str(obj))
+    if isinstance(obj, dict):
+        return {k: _convert_to_ddb_types(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_convert_to_ddb_types(v) for v in obj]
+    return obj
+
+def _scan_orphans_sync() -> list[JobStatus]:
+    _lazy_aws()
+    resp = _table.scan(
+        FilterExpression="#s IN (:p, :r)",
+        ExpressionAttributeNames={"#s": "state"},
+        ExpressionAttributeValues={
+            ":p": State.PENDING.value,
+            ":r": State.RUNNING.value,
+        },
+    )
+    return [JobStatus.from_dict(i) for i in resp.get("Items", [])]
+
+
+def _sqs_send_sync(status: JobStatus) -> str:
+    _lazy_aws()
+    resp = _sqs.send_message(
+        QueueUrl=SQS_QUEUE_URL,
+        MessageBody=json.dumps(status.to_dict(), default=str),
+
+    )
+    return resp["MessageId"]
+
+
+async def _async_sqs_send(status: JobStatus) -> str:
+    return await asyncio.to_thread(_sqs_send_sync, status)
+
+
+def _sqs_receive_sync() -> list[dict]:
+    _lazy_aws()
+    resp = _sqs.receive_message(
+        QueueUrl=SQS_QUEUE_URL,
+        MaxNumberOfMessages=10,
+        WaitTimeSeconds=5,
+        VisibilityTimeout=int(os.getenv("SQS_VISIBILITY_TIMEOUT", "1800")),
+    )
+    return resp.get("Messages", [])
+
+
+async def _async_sqs_receive() -> list[dict]:
+    return await asyncio.to_thread(_sqs_receive_sync)
+
+
+def _sqs_delete_sync(receipt_handle: str) -> None:
+    _lazy_aws()
+    _sqs.delete_message(QueueUrl=SQS_QUEUE_URL, ReceiptHandle=receipt_handle)
+
+
+async def _async_sqs_delete_message(receipt_handle: str) -> None:
+    await asyncio.to_thread(_sqs_delete_sync, receipt_handle)
+
+
+# ---------------------------------------------------------------------------
+# Progress recorder
+# ---------------------------------------------------------------------------
+
+async def record_job_progress(
+    job_id: str,
+    workflow_thread_id: str,
+    tool: str,
+    state: str,
+    stage: str,
+    message: str = "",
+    details: dict = None,
+    started_at: str = "",
+) -> None:
+    _lazy_aws()
+    item = {
+        "job_id": job_id,
+        "workflow_thread_id": workflow_thread_id or job_id,
+        "tool": tool,
+        "state": state,
+        "stage": stage,
+        "message": message,
+        "details": json.dumps(details or {}),
+        "started_at": started_at or _now(),
+        "timestamp": _now(),
+    }
+    await asyncio.to_thread(_table.put_item, Item=item)
+
+
+async def _record_cancelled_progress_async(status: JobStatus) -> None:
+    await record_job_progress(
+        job_id=status.job_id,
+        workflow_thread_id=status.workflow_thread_id or status.job_id,
+        tool=status.tool,
+        state=State.CANCELLED.value,
+        stage="dispatch",
+        message="Job was cancelled before execution",
+        details={},
+    )
+
+
+async def _recover_orphans_async(queue: "JobQueue") -> None:
+    try:
+        orphans = await asyncio.to_thread(_scan_orphans_sync)
+        for o in orphans:
+            error_msg = f"orphan recovered on restart (was {o.state})"
+            o.state = State.RECOVERED.value
+            o.error = error_msg
+            o.finished_at = _now()
+            await _async_put_status(o)
+    except Exception:
+        pass
+
+
+# ---------------------------------------------------------------------------
+# JobQueue — the core class
 # ---------------------------------------------------------------------------
 
 class JobQueue:
-    """
-    In-process async job queue.
+    def __init__(self) -> None:
+        self._tool_registry: Dict[str, Callable] = {}
+        self._workers: list[asyncio.Task] = []
+        self._job_states: Dict[str, JobStatus] = {}
+        self._cancelled: set[str] = set()
 
-    Workers run concurrently up to `max_workers` at a time (default 2 —
-    Render Standard has 1 vCPU but Blender renders are I/O-heavy).
-    """
+    def register(self, name: str, handler: Callable) -> None:
+        self._tool_registry[name] = handler
 
-    def __init__(self, max_workers: int = 2):
-        self._jobs: dict[str, JobStatus] = {}
-        self._pending: asyncio.Queue[str] = asyncio.Queue()
-        self._max_workers = max_workers
-        self._tool_registry: dict[str, Callable[..., Coroutine[Any, Any, dict]]] = {}
-        self._started = False
+    def _filter_handler_args(self, handler: Callable, args: dict) -> dict:
+        sig = inspect.signature(handler)
+        return {k: v for k, v in args.items() if k in sig.parameters}
 
-    def register(self, tool_name: str, fn: Callable[..., Coroutine[Any, Any, dict]]) -> None:
-        """Register a coroutine function as the handler for a tool name."""
-        self._tool_registry[tool_name] = fn
-
-    @staticmethod
-    def _filter_handler_args(
-        handler: Callable[..., Coroutine[Any, Any, dict]],
-        args: dict,
-    ) -> dict:
-        """
-        Pass workflow metadata only to handlers that explicitly accept it.
-
-        The queue owns orchestration fields such as `workflow_thread_id`, but
-        several older render handlers still have narrow signatures. Filtering
-        here keeps durable progress tracking without turning queue metadata
-        into unexpected keyword argument failures.
-        """
-        try:
-            signature = inspect.signature(handler)
-        except (TypeError, ValueError):
-            return dict(args)
-
-        if any(
-            parameter.kind == inspect.Parameter.VAR_KEYWORD
-            for parameter in signature.parameters.values()
-        ):
-            return dict(args)
-
-        allowed = set(signature.parameters)
-        return {key: value for key, value in args.items() if key in allowed}
-
-    async def submit(self, tool_name: str, args: dict) -> str:
-        """Submit a job and return its job_id.  Starts worker loop on first call."""
-        if not self._started:
-            await self._start_workers()
-
-        job_id = str(uuid.uuid4())
-        normalized_args = dict(args or {})
-        workflow_thread_id = str(normalized_args.get("workflow_thread_id") or job_id)
-        normalized_args["workflow_thread_id"] = workflow_thread_id
-        status = JobStatus(job_id=job_id, tool=tool_name, workflow_thread_id=workflow_thread_id)
-        status.result = normalized_args  # store args temporarily (overwritten on completion)
-        self._jobs[job_id] = status
-
-        # Store args alongside job so worker can retrieve them
-        self._jobs[job_id]._args = normalized_args  # type: ignore[attr-defined]
-        await record_job_progress(
+    async def submit(
+        self,
+        tool: str,
+        args: dict = None,
+        workflow_thread_id: str = "",
+    ) -> str:
+        job_id = _make_job_id()
+        now = _now()
+        status = JobStatus(
             job_id=job_id,
-            workflow_thread_id=workflow_thread_id,
-            tool=tool_name,
-            state=State.PENDING.value,
-            stage="queued",
-            message=f"Queued {tool_name} job",
-            details={
-                "arg_keys": sorted(normalized_args.keys()),
-            },
+            tool=tool,
+            state=State.QUEUED.value,
+            args=args or {},
+            created_at=now,
+            queued_at=now,
+            workflow_thread_id=workflow_thread_id or job_id,
         )
-        await self._pending.put(job_id)
+        self._job_states[job_id] = status
+        await _async_put_status(status)
+        await _async_sqs_send(status)
         return job_id
 
-    def get(self, job_id: str) -> JobStatus | None:
-        return self._jobs.get(job_id)
+    async def get_status(self, job_id: str) -> Optional[JobStatus]:
+        if job_id in self._job_states:
+            return self._job_states[job_id]
+        return await _async_get_status(job_id)
 
-    def list_jobs(self, limit: int = 100) -> list[dict]:
-        """Return the most recent `limit` jobs, newest first."""
-        jobs = sorted(self._jobs.values(), key=lambda j: j.created_at, reverse=True)
-        return [j.to_dict() for j in jobs[:limit]]
+    def get(self, job_id: str, force_refresh: bool = False) -> Optional[JobStatus]:
+        if not force_refresh and job_id in self._job_states:
+            cached = self._job_states[job_id]
+            if cached.state in (State.PENDING.value, State.QUEUED.value):
+                fresh = _get_status_sync(job_id)
+                if fresh and fresh.state != cached.state:
+                    self._job_states[job_id] = fresh
+                    return fresh
+            return cached
+        fresh = _get_status_sync(job_id)
+        if fresh:
+            self._job_states[job_id] = fresh
+        return fresh
 
-    async def _start_workers(self) -> None:
-        self._started = True
-        for _ in range(self._max_workers):
-            asyncio.create_task(self._worker())
+    def is_cancelled(self, job_id: str) -> bool:
+        return job_id in self._cancelled
+
+    async def cancel(self, job_id: str) -> None:
+        self._cancelled.add(job_id)
+        status = await self.get_status(job_id)
+        if status and status.state in (State.PENDING.value, State.QUEUED.value, State.RUNNING.value):
+            status.state = State.CANCELLED.value
+            status.finished_at = _now()
+            await _async_put_status(status)
+
+    # ------------------------------------------------------------------
+    # Workers
+    # ------------------------------------------------------------------
+
+    def start_workers(self, count: int = 3) -> None:
+        if self._workers:
+            return
+        for _ in range(count):
+            task = asyncio.create_task(self._worker())
+            self._workers.append(task)
 
     async def _worker(self) -> None:
         while True:
-            job_id = await self._pending.get()
-            status = self._jobs.get(job_id)
-            if status is None:
-                self._pending.task_done()
-                continue
+            try:
+                messages = await _async_sqs_receive()
+                for msg in messages:
+                    body = json.loads(msg["Body"])
+                    status = JobStatus.from_dict(body)
+                    receipt_handle = msg["ReceiptHandle"]
+                    await self._handle_job(status, receipt_handle)
+            except Exception:
+                pass
+            await asyncio.sleep(1)
 
-            args = getattr(status, "_args", {})
+    async def _handle_job(self, status: JobStatus, receipt_handle: str) -> None:
+        job_id = status.job_id
+        try:
+            if self.is_cancelled(job_id):
+                status.state = State.CANCELLED.value
+                status.finished_at = _now()
+                _put_status_sync(status)
+                asyncio.create_task(_record_cancelled_progress_async(status))
+                await _async_sqs_delete_message(receipt_handle)
+                return
+
+            args = status.args or {}
             handler = self._tool_registry.get(status.tool)
+            open("/tmp/jq_debug.log","a").write(f"JQ_DEBUG job_id={job_id} tool={status.tool} handler_found={handler is not None} registry_keys={list(self._tool_registry.keys())}\n")
 
-            status.state = State.RUNNING
+            status.state = State.RUNNING.value
             status.started_at = _now()
-            status.result = None  # clear the temp args
+            status.result = None
+            await _async_put_status(status)
+
             await record_job_progress(
-                job_id=status.job_id,
-                workflow_thread_id=status.workflow_thread_id or status.job_id,
+                job_id=job_id,
+                workflow_thread_id=status.workflow_thread_id or job_id,
                 tool=status.tool,
                 state=State.RUNNING.value,
                 stage="dispatch",
                 message=f"Dispatching {status.tool} handler",
                 details={},
-                started_at=datetime.now(timezone.utc),
+                started_at=_now(),
             )
 
+            _JOB_TIMEOUT = int(os.getenv("JOB_TIMEOUT_SECS", "1500"))
+
             if handler is None:
-                status.state = State.FAILED
-                status.error = f"No handler registered for tool '{status.tool}'"
-                status.finished_at = _now()
-                await record_job_progress(
-                    job_id=status.job_id,
-                    workflow_thread_id=status.workflow_thread_id or status.job_id,
-                    tool=status.tool,
-                    state=State.FAILED.value,
-                    stage="dispatch_failed",
-                    message=status.error,
-                    details={},
-                    error=status.error,
-                    finished_at=datetime.now(timezone.utc),
-                )
-                self._pending.task_done()
-                continue
+                raise ValueError(f"No handler registered for tool {status.tool}")
 
-            # Hard cap per-job: prevents orphaned jobs from monopolising the
-            # worker and starving subsequent renders. The default budget is
-            # intentionally longer for website-to-video and reference-driven
-            # jobs, which can spend several minutes across analysis, render,
-            # QA, and upload before the result is ready to poll.
-            _JOB_TIMEOUT = int(__import__("os").getenv("JOB_TIMEOUT_SECS", "1500"))
-            try:
-                handler_args = self._filter_handler_args(handler, args)
-                result = await asyncio.wait_for(handler(**handler_args), timeout=_JOB_TIMEOUT)
-                status.state = State.COMPLETED
-                status.result = result
-                await record_job_progress(
-                    job_id=status.job_id,
-                    workflow_thread_id=status.workflow_thread_id or status.job_id,
-                    tool=status.tool,
-                    state=State.COMPLETED.value,
-                    stage="completed",
-                    message=f"{status.tool} job completed",
-                    details={},
-                    result=result,
-                    finished_at=datetime.now(timezone.utc),
-                )
-            except asyncio.TimeoutError:
-                status.state = State.FAILED
-                status.error = f"Job exceeded maximum runtime of {_JOB_TIMEOUT}s"
-                await record_job_progress(
-                    job_id=status.job_id,
-                    workflow_thread_id=status.workflow_thread_id or status.job_id,
-                    tool=status.tool,
-                    state=State.FAILED.value,
-                    stage="timeout",
-                    message=status.error,
-                    details={"timeout_seconds": _JOB_TIMEOUT},
-                    error=status.error,
-                    finished_at=datetime.now(timezone.utc),
-                )
-            except Exception as exc:
-                status.state = State.FAILED
-                status.error = str(exc)
-                await record_job_progress(
-                    job_id=status.job_id,
-                    workflow_thread_id=status.workflow_thread_id or status.job_id,
-                    tool=status.tool,
-                    state=State.FAILED.value,
-                    stage="failed",
-                    message=str(exc),
-                    details={"exception_type": type(exc).__name__},
-                    error=status.error,
-                    finished_at=datetime.now(timezone.utc),
-                )
-            finally:
+            if self.is_cancelled(job_id):
+                status.state = State.CANCELLED.value
                 status.finished_at = _now()
-                self._pending.task_done()
+                _put_status_sync(status)
+                asyncio.create_task(_record_cancelled_progress_async(status))
+                await _async_sqs_delete_message(receipt_handle)
+                return
+
+            handler_args = self._filter_handler_args(handler, args)
+            result = await asyncio.wait_for(
+                handler(**handler_args), timeout=_JOB_TIMEOUT
+            )
+
+            if self.is_cancelled(job_id):
+                status.state = State.CANCELLED.value
+                status.finished_at = _now()
+                _put_status_sync(status)
+                await _async_sqs_delete_message(receipt_handle)
+                return
+
+            if result is None:
+                result = {}
+
+            status.state = State.COMPLETED.value
+            status.result = result
+            status.finished_at = _now()
+            if result is not None and isinstance(result, dict):
+                status.result = result.get("data", result)
+            await record_job_progress(
+                job_id=job_id,
+                workflow_thread_id=status.workflow_thread_id or job_id,
+                tool=status.tool,
+                state=State.COMPLETED.value,
+                stage="done",
+                message=f"Job {job_id} completed",
+                details={"result": result} if isinstance(result, dict) else {},
+            )
+            _put_status_sync(status)
+
+        except asyncio.CancelledError:
+            status.state = State.CANCELLED.value
+            status.finished_at = _now()
+            _put_status_sync(status)
+        except asyncio.TimeoutError:
+            status.state = State.FAILED.value
+            status.error = f"Job timed out after {_JOB_TIMEOUT}s"
+            status.finished_at = _now()
+            _put_status_sync(status)
+        except Exception as e:
+            status.state = State.FAILED.value
+            status.error = str(e)
+            status.finished_at = _now()
+            _put_status_sync(status)
+
+        try:
+            await _async_sqs_delete_message(receipt_handle)
+        except Exception:
+            pass
+
+    # ------------------------------------------------------------------
+    # Integration helpers
+    # ------------------------------------------------------------------
+
+    async def list_jobs(
+        self,
+        limit: int = 50,
+        status_filter: Optional[str] = None,
+    ) -> list[dict]:
+        _lazy_aws()
+        kwargs: dict = {}
+        if status_filter:
+            kwargs["FilterExpression"] = "#s = :s"
+            kwargs["ExpressionAttributeNames"] = {"#s": "state"}
+            kwargs["ExpressionAttributeValues"] = {":s": status_filter}
+        resp = await asyncio.to_thread(
+            lambda: _table.scan(Limit=limit, **kwargs)
+        )
+        items = resp.get("Items", [])
+        for item in items:
+            if isinstance(item.get("result"), str):
+                try:
+                    item["result"] = json.loads(item["result"])
+                except (json.JSONDecodeError, TypeError):
+                    pass
+        return items
+
+    async def get_pending_run_counts(self) -> dict:
+        _lazy_aws()
+        resp = await asyncio.to_thread(
+            lambda: _table.scan(
+                FilterExpression="#s IN (:p, :r)",
+                ExpressionAttributeNames={"#s": "state"},
+                ExpressionAttributeValues={
+                    ":p": State.PENDING.value,
+                    ":r": State.RUNNING.value,
+                },
+            )
+        )
+        items = resp.get("Items", [])
+        pending = sum(1 for i in items if i.get("state") == State.PENDING.value)
+        running = sum(1 for i in items if i.get("state") == State.RUNNING.value)
+        return {"pending": pending, "running": running}
 
 
 # ---------------------------------------------------------------------------
-# Singleton — default 1 worker: Render Standard has 1 vCPU, concurrent
-# Blender subprocesses thrash CPU and both time out.  Override via env var.
+# Singleton
 # ---------------------------------------------------------------------------
 
-queue = JobQueue(max_workers=int(__import__("os").getenv("JOB_QUEUE_WORKERS", "1")))
+queue = JobQueue()
+
+
+# ---------------------------------------------------------------------------
+# Server lifecycle hooks (called by server.py)
+# ---------------------------------------------------------------------------
+
+async def start_job_workers(worker_count: int = 3) -> None:
+    import sys
+    sys.stderr.write("SJW_START\n"); sys.stderr.flush()
+    await _recover_orphans_async(queue)
+    sys.stderr.write("SJW_RECOVER_DONE\n"); sys.stderr.flush()
+    queue.start_workers(worker_count)
+    sys.stderr.write(f"SJW_WORKERS_STARTED count={len(queue._workers)}\n"); sys.stderr.flush()

@@ -19,6 +19,7 @@ import json
 import logging
 import os
 import uuid
+from contextlib import asynccontextmanager
 
 import uvicorn
 from dotenv import load_dotenv
@@ -366,7 +367,7 @@ async def blender_undo_last_step(job_id: str) -> str:
 async def blender_cleanup_blend_states(job_id: str) -> str:
     from tools.blender_runner import cleanup_blend_states as _cbs
     result = await _cbs(job_id)
-    return json.dumps({success: result})
+    return json.dumps({"success": result})
 
 
 @mcp.tool()
@@ -700,6 +701,22 @@ async def rest_analyze_video(request: Request) -> JSONResponse:
 # Combined Starlette app
 # ---------------------------------------------------------------------------
 
+async def _start_queue_workers_on_startup() -> None:
+    """Start the in-process job-queue workers (consumes SQS, dispatches to
+    registered tool handlers). Without this, /api/jobs submissions are
+    enqueued but never processed."""
+    from tools.job_queue import start_job_workers as _start_workers
+    count = int(os.getenv("JOB_QUEUE_WORKERS", "3"))
+    await _start_workers(count)
+    logger.info("Started %d job-queue worker(s)", count)
+
+
+@asynccontextmanager
+async def _lifespan(app):
+    await _start_queue_workers_on_startup()
+    yield
+
+
 rest_routes = [
     Route("/health",                rest_health),
     Route("/api/call_tool",         rest_call_tool,   methods=["POST"]),
@@ -725,6 +742,7 @@ app = Starlette(
         Mount("/", app=mcp.sse_app()),
     ],
     middleware=middleware,
+    lifespan=_lifespan,
 )
 
 

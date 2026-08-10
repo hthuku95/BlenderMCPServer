@@ -454,6 +454,17 @@ class JobQueue:
     # Integration helpers
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _json_ready(obj: Any) -> Any:
+        """Recursively coerce boto3 Decimal values to int/float for JSON."""
+        if isinstance(obj, Decimal):
+            return int(obj) if obj == obj.to_integral_value() else float(obj)
+        if isinstance(obj, dict):
+            return {k: JobQueue._json_ready(v) for k, v in obj.items()}
+        if isinstance(obj, list):
+            return [JobQueue._json_ready(v) for v in obj]
+        return obj
+
     async def list_jobs(
         self,
         limit: int = 50,
@@ -475,7 +486,7 @@ class JobQueue:
                     item["result"] = json.loads(item["result"])
                 except (json.JSONDecodeError, TypeError):
                     pass
-        return items
+        return [self._json_ready(i) for i in items]
 
     async def get_pending_run_counts(self) -> dict:
         _lazy_aws()

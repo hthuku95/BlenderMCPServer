@@ -616,7 +616,8 @@ async def rest_list_jobs(request: Request) -> JSONResponse:
     """GET /api/jobs — list recent jobs."""
     if not _check_api_key(request):
         return JSONResponse({"error": "Unauthorized"}, status_code=401)
-    return JSONResponse({"jobs": _job_queue.list_jobs(limit=50)})
+    jobs = await _job_queue.list_jobs(limit=50)
+    return JSONResponse({"jobs": jobs})
 
 
 async def rest_cancel_job(request: Request) -> JSONResponse:

@@ -297,7 +297,8 @@ async def generate_and_run_manim(
         ext = ".mov" if transparent else ".mp4"
         output_path = f"/tmp/manim_gen_{os.getpid()}{ext}"
 
-    async def _render_manim(description: str, **kwargs) -> tuple[str, str]:
+    async def _render_manim(prompt: str, **kwargs) -> tuple[str, str]:
+        description = prompt
         if not USE_VLM_TOURNAMENT:
             return await _retry_render_single(description, duration, background, output_path, transparent, quality)
 

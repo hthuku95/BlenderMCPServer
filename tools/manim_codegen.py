@@ -30,6 +30,7 @@ SCENE_CLASS_NAME = "GeneratedScene"
 NUM_CANDIDATES = int(os.getenv("VIGA_NUM_CANDIDATES", "1"))
 USE_VLM_TOURNAMENT = NUM_CANDIDATES > 1
 _VIGA_ENABLE_DOCKER = os.getenv("VIGA_ENABLE_DOCKER_SANDBOX", "").lower() in ("true", "1", "yes")
+VIGA_REACT_LOOP = os.getenv("VIGA_REACT_LOOP", "true").lower() in ("true", "1", "yes")
 
 
 async def _web_search(query: str, num_results: int = 5) -> str:
@@ -225,8 +226,53 @@ async def _run_vlm_tournament(results: list[dict], description: str) -> int:
     return candidates[0][0] if candidates else 0
 
 
+async def _react_render_single(description: str, duration: float, background: str, output_path: str, transparent: bool, quality: str) -> tuple[str, str]:
+    """Agentic ReAct path: the LLM drives codegen + web search + docker validation
+    + rendering turn-by-turn instead of a hard-coded retry loop."""
+    from tools.react_codegen import run_agentic_codegen
+
+    from tools.manim_runner import run_manim_scene
+
+    async def _render_manim_code(code: str) -> dict:
+        with tempfile.NamedTemporaryFile(suffix=".py", prefix=f"manim_react_", delete=False, mode="w") as f:
+            f.write(code)
+            scene_file = f.name
+        try:
+            result = await run_manim_scene(
+                scene_file=scene_file, scene_class=SCENE_CLASS_NAME,
+                args={}, quality=quality, output_path=output_path,
+                transparent=transparent, timeout=300,
+            )
+            if result and os.path.exists(result):
+                return {"output_path": result}
+            return {"error": "render produced no output file"}
+        except RuntimeError as e:
+            return {"error": str(e)[-3000:]}
+        finally:
+            try:
+                os.unlink(scene_file)
+            except OSError:
+                pass
+
+    return await run_agentic_codegen(
+        engine="manim",
+        system_prompt=_SYSTEM_PROMPT_TEMPLATE.format(
+            scene_class=SCENE_CLASS_NAME, duration=duration,
+            background=background, description=description,
+        ),
+        brief=description,
+        render_func=_render_manim_code,
+        store_success=lambda code, b: store_success("manim", code, b),
+        rag_collection="manim",
+        docker_script_type="manim",
+    )
+
+
 async def _retry_render_single(description: str, duration: float, background: str, output_path: str, transparent: bool, quality: str) -> tuple[str, str]:
     from tools.manim_runner import run_manim_scene
+
+    if VIGA_REACT_LOOP:
+        return await _react_render_single(description, duration, background, output_path, transparent, quality)
 
     code = ""
     last_error = ""

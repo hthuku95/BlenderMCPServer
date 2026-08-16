@@ -29,6 +29,7 @@ MAX_RETRIES = 5
 NUM_CANDIDATES = int(os.getenv("VIGA_NUM_CANDIDATES", "1"))
 USE_VLM_TOURNAMENT = NUM_CANDIDATES > 1
 _VIGA_ENABLE_DOCKER = os.getenv("VIGA_ENABLE_DOCKER_SANDBOX", "").lower() in ("true", "1", "yes")
+VIGA_REACT_LOOP = os.getenv("VIGA_REACT_LOOP", "true").lower() in ("true", "1", "yes")
 
 _BANNED_UI_OPS_NOTICE = (
     "Do NOT use: bpy.ops.wm.*, bpy.ops.screen.*, bpy.ops.view3d.*, "
@@ -330,8 +331,50 @@ async def _run_vlm_tournament(results: list[dict], prompt: str) -> int:
     return candidates[0][0] if candidates else 0
 
 
+async def _react_render_single(prompt: str, duration: float, style: str, output_path: str, reference_image_url: str) -> tuple[str, str]:
+    """Agentic ReAct path: the LLM drives codegen + web search + docker validation
+    + rendering turn-by-turn instead of a hard-coded retry loop."""
+    from tools.react_codegen import run_agentic_codegen
+
+    from tools.blender_runner import run_blender_script
+
+    async def _render_bpy_code(code: str) -> dict:
+        with tempfile.NamedTemporaryFile(suffix=".py", prefix=f"bpy_react_", delete=False, mode="w") as f:
+            f.write(code)
+            script_path = f.name
+        try:
+            args = {"prompt": prompt[:200], "duration": duration, "style": style, "output_path": output_path}
+            if reference_image_url:
+                args["reference_image_url"] = reference_image_url
+            result = await run_blender_script(script_path=script_path, args=args, timeout=600)
+            out = result.get("output_path", output_path)
+            if os.path.exists(out):
+                return {"output_path": out}
+            return {"error": "render produced no output file"}
+        except RuntimeError as e:
+            return {"error": str(e)[-3000:]}
+        finally:
+            try:
+                os.unlink(script_path)
+            except OSError:
+                pass
+
+    return await run_agentic_codegen(
+        engine="blender",
+        system_prompt=_build_bpy_system_prompt(prompt, duration, style, reference_image_url),
+        brief=prompt,
+        render_func=_render_bpy_code,
+        store_success=lambda code, b: store_success("bpy", code, b),
+        rag_collection="bpy",
+        docker_script_type="blender",
+    )
+
+
 async def _retry_render_single(prompt: str, duration: float, style: str, output_path: str, reference_image_url: str) -> tuple[str, str]:
     """Standard single-candidate approach with retry loop. Returns (output_path, code)."""
+    if VIGA_REACT_LOOP:
+        return await _react_render_single(prompt, duration, style, output_path, reference_image_url)
+
     from tools.blender_runner import run_blender_script
 
     code = ""

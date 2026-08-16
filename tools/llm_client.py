@@ -86,6 +86,14 @@ _BEDROCK_TIMEOUT_SECONDS = float(os.getenv("BEDROCK_TIMEOUT_SECONDS", "120"))
 _QWEEN_MODEL = os.getenv("QWEEN_MODEL", "gemma4:12b")
 _CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-opus-4-6")
 _OLLAMA_EMBEDDING_MODEL = os.getenv("OLLAMA_EMBEDDING_MODEL", "qwen3-embedding:4b")
+
+
+def _ollama_openai_base_url() -> str:
+    """Ollama OpenAI-compatible endpoint base (adds the /v1 path segment)."""
+    base = _OLLAMA_BASE_URL.rstrip("/")
+    if base.endswith("/v1"):
+        return base
+    return f"{base}/v1"
 _PROVIDER     = os.getenv("LLM_PROVIDER", "auto").lower()  # "qwen" | "ollama" | "gemini" | "nvidia" | "gemma" | "deepseek" | "claude" | "auto"
 
 
@@ -214,7 +222,7 @@ def get_chat_model(
             return ChatOpenAI(
                 model=_QWEEN_MODEL,
                 api_key="ollama",  # ignored by Ollama but required by ChatOpenAI
-                base_url=_OLLAMA_BASE_URL,
+                base_url=_ollama_openai_base_url(),
                 temperature=temperature,
                 max_tokens=max_tokens,
                 timeout=_OLLAMA_TIMEOUT_SECONDS,
@@ -230,7 +238,7 @@ def get_chat_model(
             return ChatOpenAI(
                 model=_OLLAMA_MODEL,
                 api_key="ollama",  # ignored by Ollama but required by ChatOpenAI
-                base_url=_OLLAMA_BASE_URL,
+                base_url=_ollama_openai_base_url(),
                 temperature=temperature,
                 max_tokens=max_tokens,
                 timeout=_OLLAMA_TIMEOUT_SECONDS,

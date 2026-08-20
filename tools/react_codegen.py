@@ -38,6 +38,14 @@ from tools.llm_client import active_provider, get_chat_model
 
 MAX_REACT_TURNS = int(os.getenv("VIGA_REACT_MAX_TURNS", "10"))
 
+# Context-bloat guards. The ReAct loop feeds the full accumulated message
+# history back to the model every turn; without caps, web_search/rag/docker
+# logs and render tracebacks balloon the prompt to ~45K tokens, which the
+# single-slot Ollama GPU prefill takes minutes to chew — wedging the whole
+# job. Keep history small and truncate every tool result.
+_MAX_HISTORY_MESSAGES = int(os.getenv("VIGA_REACT_MAX_HISTORY", "6"))
+_MAX_TOOL_RESULT_CHARS = int(os.getenv("VIGA_REACT_MAX_TOOL_RESULT", "2000"))
+
 _VIGA_ENABLE_DOCKER = os.getenv("VIGA_ENABLE_DOCKER_SANDBOX", "").lower() in ("true", "1", "yes")
 
 
@@ -56,6 +64,16 @@ def _strip_fences(text: str) -> str:
     if fence:
         return fence.group(1).strip()
     return text.strip()
+
+
+def _clip(text: str, limit: int = _MAX_TOOL_RESULT_CHARS) -> str:
+    """Bound a tool result to stop the prompt ballooning to 45K tokens."""
+    text = text.strip()
+    if len(text) <= limit:
+        return text
+    head = text[: int(limit * 0.7)]
+    tail = text[-int(limit * 0.3):]
+    return f"{head}\n…[truncated {len(text) - limit} chars]…\n{tail}"
 
 
 def _build_react_instructions(engine: str, system_prompt: str) -> str:
@@ -119,13 +137,13 @@ async def run_agentic_codegen(
     async def web_search(query: str, num_results: int = 5) -> str:
         """Search the web for API documentation or Blender/Manim usage examples."""
         from tools.browserbase_client import browserbase_search
-        return await browserbase_search(query, num_results)
+        return _clip(await browserbase_search(query, num_results))
 
     @tool
     async def rag_retrieve(query: str) -> str:
         """Retrieve past successful scripts similar to the given error or context."""
         from tools.rag_client import query_similar
-        return await query_similar(rag_collection, query, brief)
+        return _clip(await query_similar(rag_collection, query, brief))
 
     @tool
     async def docker_validate(code: str) -> str:
@@ -142,7 +160,7 @@ async def run_agentic_codegen(
             return "OK"
         logs = str(result.get("logs", ""))[-3000:]
         err = str(result.get("error", "Docker sandbox validation failed"))
-        return f"[Docker sandbox pre-check] {err}\nLogs:\n{logs}"
+        return _clip(f"[Docker sandbox pre-check] {err}\nLogs:\n{logs}")
 
     @tool
     async def run_render(code: str) -> str:
@@ -152,7 +170,7 @@ async def run_agentic_codegen(
         cleaned = _strip_fences(code)
         result = await render_func(cleaned)
         if "error" in result:
-            return json.dumps({"ok": False, "error": result["error"]})
+            return json.dumps({"ok": False, "error": _clip(str(result["error"]))})
         if store_success:
             try:
                 await store_success(cleaned, brief)
@@ -170,7 +188,10 @@ async def run_agentic_codegen(
             max_tokens=8192,
             provider=state.get("provider") or provider,
         ).bind_tools(tools)
-        full_messages = [SystemMessage(content=system_content)] + list(state["messages"])
+        history = list(state["messages"])
+        if len(history) > _MAX_HISTORY_MESSAGES:
+            history = history[-_MAX_HISTORY_MESSAGES:]
+        full_messages = [SystemMessage(content=system_content)] + history
         response = llm.invoke(full_messages)
         return {
             "messages": [response],

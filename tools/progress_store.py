@@ -33,12 +33,35 @@ def _utc_now() -> datetime:
 
 
 def _db_uri() -> str:
-    return (
+    uri = (
         os.getenv("LANGGRAPH_POSTGRES_URL")
         or os.getenv("NEON_DATABASE_URL")
         or os.getenv("DATABASE_URL")
         or ""
     ).strip()
+    if not uri:
+        return uri
+    # Force IPv4: Neon/Timescale hosts may resolve to IPv6 first and the
+    # instances in this VPC have no IPv6 route ("Network is unreachable").
+    # libpg honors hostaddr over host, so inject it without touching the
+    # URI credentials/ssl params.
+    try:
+        from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+        from socket import getaddrinfo, AF_INET, SOCK_STREAM
+
+        parts = urlsplit(uri)
+        host = parts.hostname or ""
+        q = dict(parse_qsl(parts.query))
+        if host and "hostaddr" not in q:
+            # no hostaddr yet — resolve IPv4 and append it
+            ips = sorted({addr[4][0] for addr in getaddrinfo(host, None, AF_INET, SOCK_STREAM)})
+            if ips:
+                q["hostaddr"] = ips[0]
+                query = urlencode(list(q.items()))
+                uri = urlunsplit(parts._replace(query=query))
+    except Exception:
+        pass
+    return uri
 
 
 async def _ensure_pool() -> AsyncConnectionPool | None:

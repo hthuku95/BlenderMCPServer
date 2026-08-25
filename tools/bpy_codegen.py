@@ -164,6 +164,50 @@ Style: {style}
 • Add Grease Pencil object:
     bpy.ops.object.gpencil_add(align='WORLD', location=(0, 0, 0))
 
+═══ EXTERNAL 3D MODELS (Sketchfab assets stored in R2) ═══
+Realistic products/devices/furniture should come from downloaded models, NOT
+hand-modeled primitives. If the task benefits from real-world geometry, use
+this helper VERBATIM at the top of your script (after `import bpy, json`):
+
+    import urllib.request, zipfile, glob, os, hashlib
+
+    def load_model_from_url(url):
+        """Download a GLB/GLTF/ZIP model archive and import it.
+        Returns the root object. Prints MODEL_IMPORTED with its dimensions."""
+        dest = "/tmp/asset_" + hashlib.md5(url.encode()).hexdigest()[:10]
+        os.makedirs(dest, exist_ok=True)
+        if url.lower().endswith((".glb", ".gltf")):
+            filepath = os.path.join(dest, "model" + os.path.splitext(url)[1])
+            urllib.request.urlretrieve(url, filepath)
+        else:
+            archive = os.path.join(dest, "model.zip")
+            urllib.request.urlretrieve(url, archive)
+            zipfile.ZipFile(archive).extractall(dest)
+            matches = (glob.glob(os.path.join(dest, "**", "*.gltf"), recursive=True)
+                       or glob.glob(os.path.join(dest, "**", "*.glb"), recursive=True))
+            if not matches:
+                raise RuntimeError("No .gltf/.glb found in downloaded archive")
+            filepath = sorted(matches)[0]
+        before = set(bpy.data.objects)
+        bpy.ops.import_scene.gltf(filepath=filepath)
+        new_objs = [o for o in bpy.data.objects if o not in before]
+        root = new_objs[0]
+        bpy.context.view_layer.objects.active = root
+        print(f"MODEL_IMPORTED name={root.name} dims={[round(d,3) for d in root.dimensions]}")
+        return root
+
+Full workflow (assets pipeline):
+ 1. Call sketchfab_search(query="coffee machine") -> pick a CC-licensed uid
+ 2. Call sketchfab_download(uid="<uid>") -> returns an R2 URL
+ 3. Inside your bpy script: root = load_model_from_url("<R2 URL>")
+ 4. The returned root behaves like ANY Blender object — animate it with code:
+        root.location = (0, -2, 0); root.keyframe_insert(data_path='location', frame=1)
+        root.rotation_euler.z += 3.14159; root.keyframe_insert(data_path='rotation_euler', frame=120)
+    Parent other objects to it, add constraints, modifiers, physics — all standard bpy.
+ 5. ⚠️ Models ship at ARBITRARY scale/orientation. Read the printed dims and
+    normalize, e.g. fit into 2m box:
+        s = 2.0 / max(root.dimensions); root.scale = (s, s, s)
+
 ═══ ERROR FIXING ═══
 If you are not sure about the correct bpy API to use, you can search the web
 by including the following marker in your response:

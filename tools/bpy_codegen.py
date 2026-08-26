@@ -207,6 +207,10 @@ Full workflow (assets pipeline):
  5. ⚠️ Models ship at ARBITRARY scale/orientation. Read the printed dims and
     normalize, e.g. fit into 2m box:
         s = 2.0 / max(root.dimensions); root.scale = (s, s, s)
+ 6. ⚠️ ONLY use this helper when you actually downloaded a model in step 2.
+    If no external model is needed for the scene, do NOT define or reference
+    load_model_from_url or root anywhere — build geometry directly instead.
+    Never reference a variable you have not assigned in YOUR script.
 
 ═══ ERROR FIXING ═══
 If you are not sure about the correct bpy API to use, you can search the web

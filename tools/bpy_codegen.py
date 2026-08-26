@@ -193,7 +193,7 @@ this helper VERBATIM at the top of your script (after `import bpy, json`):
         new_objs = [o for o in bpy.data.objects if o not in before]
         root = new_objs[0]
         bpy.context.view_layer.objects.active = root
-        print(f"MODEL_IMPORTED name={root.name} dims={[round(d,3) for d in root.dimensions]}")
+        print(f"MODEL_IMPORTED name={{root.name}} dims={{[round(d,3) for d in root.dimensions]}}")
         return root
 
 Full workflow (assets pipeline):

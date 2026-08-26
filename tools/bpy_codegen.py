@@ -235,11 +235,35 @@ def _extract_code(text: str) -> str:
         cleaned.append(line)
     result = "\n".join(cleaned).strip()
     if result:
-        return result
+        return _guard_orphan_root(result)
     fence = re.search(r"```(?:python)?\n(.*?)```", text, re.DOTALL)
     if fence:
-        return fence.group(1).strip()
-    return text.strip()
+        return _guard_orphan_root(fence.group(1).strip())
+    return _guard_orphan_root(text.strip())
+
+
+def _guard_orphan_root(code: str) -> str:
+    """Neutralize references to `root` when the Sketchfab helper was never
+    called. The system prompt teaches a `root = load_model_from_url(...)`
+    pattern; models sometimes copy the usage lines without the assignment,
+    producing `NameError: name 'root' is not defined` at render time.
+    Deterministic guard: comment out orphan root lines so the rest of the
+    script renders instead of failing."""
+    import re as _re
+    calls_helper = bool(_re.search(r"\bload_model_from_url\s*\(", code))
+    assigns_root = bool(_re.search(r"^\s*root\s*=", code, flags=_re.M)) or \
+        bool(_re.search(r"\broot\s*=\s*load_model_from_url", code))
+    if calls_helper and assigns_root:
+        return code  # legitimate usage
+    if "root" not in code:
+        return code
+    out = []
+    for line in code.splitlines():
+        if _re.search(r"\broot\b", line) and not line.lstrip().startswith("#"):
+            out.append("# [orphan-root removed] " + line)
+        else:
+            out.append(line)
+    return "\n".join(out)
 
 
 def _strip_web_search_markers(text: str) -> str:

@@ -172,8 +172,8 @@ this helper VERBATIM at the top of your script (after `import bpy, json`):
     import urllib.request, zipfile, glob, os, hashlib
 
     def load_model_from_url(url):
-        """Download a GLB/GLTF/ZIP model archive and import it.
-        Returns the root object. Prints MODEL_IMPORTED with its dimensions."""
+        # Download a GLB/GLTF/ZIP model archive and import it.
+        # Returns the root object. Prints MODEL_IMPORTED with its dimensions.
         dest = "/tmp/asset_" + hashlib.md5(url.encode()).hexdigest()[:10]
         os.makedirs(dest, exist_ok=True)
         if url.lower().endswith((".glb", ".gltf")):

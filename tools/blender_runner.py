@@ -8,6 +8,8 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from tools.code_guards import apply_all as _apply_script_guards
+
 BLENDER_BIN = os.getenv("BLENDER_BIN", "blender")
 
 
@@ -29,6 +31,7 @@ async def run_blender_script_with_retry(
     timeout: int = 600,
 ) -> dict[str, Any]:
     last_exc: Exception | None = None
+    script_content = _apply_script_guards(script_content)
     for attempt in range(1, max_attempts + 1):
         tmp = Path(tempfile.mkdtemp(prefix="bpy_retry_" + str(attempt) + "_")) / "script.py"
         tmp.parent.mkdir(parents=True, exist_ok=True)

@@ -168,6 +168,11 @@ async def run_agentic_codegen(
         Returns JSON: {\"ok\": true, \"output_path\": \"...\"} on success or
         {\"ok\": false, \"error\": \"...\"} on failure."""
         cleaned = _strip_fences(code)
+        try:
+            from tools.code_guards import apply_all as _apply_script_guards
+            cleaned = _apply_script_guards(cleaned)
+        except Exception:
+            pass
         result = await render_func(cleaned)
         if "error" in result:
             return json.dumps({"ok": False, "error": _clip(str(result["error"]))})

@@ -47,6 +47,7 @@ MAX_REACT_TURNS = int(os.getenv("VIGA_REACT_MAX_TURNS", "10"))
 # single-slot Ollama GPU prefill takes minutes to chew — wedging the whole
 # job. Keep history small and truncate every tool result.
 _MAX_HISTORY_MESSAGES = int(os.getenv("VIGA_REACT_MAX_HISTORY", "6"))
+_EMPTY_RESPONSE_MAX_RETRIES = int(os.getenv("VIGA_REACT_EMPTY_RETRIES", "2"))
 _MAX_TOOL_RESULT_CHARS = int(os.getenv("VIGA_REACT_MAX_TOOL_RESULT", "2000"))
 
 _VIGA_ENABLE_DOCKER = os.getenv("VIGA_ENABLE_DOCKER_SANDBOX", "").lower() in ("true", "1", "yes")
@@ -236,6 +237,33 @@ async def run_agentic_codegen(
             history = history[-_MAX_HISTORY_MESSAGES:]
         full_messages = [SystemMessage(content=system_content)] + history
         response = await llm.ainvoke(full_messages)
+        # EMPTY-RESPONSE RETRY: gemma4 can intermittently return a refusal with
+        # empty content and no tool_calls (seen live: additional_kwargs removed
+        # '../refusal'). A single nudge usually gets a real reply. Bounded so it
+        # can never spin forever.
+        _empty_retries = 0
+        while (
+            not (getattr(response, "content", "") or "")
+            and not list(getattr(response, "tool_calls", None) or [])
+            and _empty_retries < _EMPTY_RESPONSE_MAX_RETRIES
+        ):
+            _empty_retries += 1
+            logger.warning(
+                "codegen turn=%s empty response (refusal), retrying with nudge %s/%s",
+                state.get("turn_count", 0) + 1, _empty_retries, _EMPTY_RESPONSE_MAX_RETRIES,
+            )
+            response = await llm.ainvoke(
+                full_messages
+                + [
+                    HumanMessage(
+                        content=(
+                            "Your previous turn produced no output. Respond now: either "
+                            "call the run_render tool with a complete Blender script that "
+                            "renders the requested scene, or reply with the script text."
+                        )
+                    )
+                ]
+            )
         # TEXT-SALVAGE: if the model answered in prose (no tool call) but the
         # text contains a plausible script, render it via run_render instead of
         # letting the loop end at turn 1 and discard a complete answer.

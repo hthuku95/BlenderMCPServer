@@ -23,11 +23,14 @@ as the old code (VIGA_ENABLE_DOCKER_SANDBOX) so behavior is preserved.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
 import re
 from typing import Annotated, Any, Callable, TypedDict
+
+import httpx
 
 logger = logging.getLogger("react_codegen")
 
@@ -49,6 +52,15 @@ MAX_REACT_TURNS = int(os.getenv("VIGA_REACT_MAX_TURNS", "10"))
 _MAX_HISTORY_MESSAGES = int(os.getenv("VIGA_REACT_MAX_HISTORY", "6"))
 _EMPTY_RESPONSE_MAX_RETRIES = int(os.getenv("VIGA_REACT_EMPTY_RETRIES", "2"))
 _MAX_TOOL_RESULT_CHARS = int(os.getenv("VIGA_REACT_MAX_TOOL_RESULT", "2000"))
+
+# GPU health-probe guard. Before spending a full job's time on a ReAct loop,
+# check that the Ollama backend actually returns tool_calls on a minimal probe.
+# Ollama's single loaded gemma4:12b instance (NUM_PARALLEL=2 x 64K context) can
+# intermittently drop/short-circuit requests when the shared slot can't fit the
+# new context — surfaced as an empty/refusal response (no error). We fail fast
+# with a clear message instead of burning MAX_TURNS against a flaky backend.
+_GPU_PROBE_MAX_FAILS = int(os.getenv("VIGA_GPU_PROBE_MAX_FAILS", "2"))
+_GPU_PROBE_TIMEOUT = float(os.getenv("VIGA_GPU_PROBE_TIMEOUT", "25"))
 
 _VIGA_ENABLE_DOCKER = os.getenv("VIGA_ENABLE_DOCKER_SANDBOX", "").lower() in ("true", "1", "yes")
 
@@ -113,6 +125,77 @@ def _clip(text: str, limit: int = _MAX_TOOL_RESULT_CHARS) -> str:
     head = text[: int(limit * 0.7)]
     tail = text[-int(limit * 0.3):]
     return f"{head}\n…[truncated {len(text) - limit} chars]…\n{tail}"
+
+
+async def _gpu_healthy(provider: str) -> tuple[bool, str]:
+    """Probe the Ollama backend for real tool-calling capability.
+
+    Returns (ok, detail). Only meaningful for the ollama provider — Gemini /
+    Claude / DeepSeek / NVIDIA are remote and don't suffer the same single-slot
+    refusal mode, so this is a no-op pass for them.
+
+    The probe sends a tiny tool-scoped /api/chat request and requires a
+    tool_calls array in the reply. An empty/refusal reply (no tool_calls, empty
+    content) means the shared slot dropped the request — we treat that as an
+    unhealthy backend so callers can fail fast instead of burning MAX_TURNS.
+    """
+    if provider != "ollama":
+        return True, f"provider={provider} (probe skipped)"
+    base = (os.getenv("OLLAMA_BASE_URL") or "http://172.31.43.45:11434").rstrip("/")
+    model = os.getenv("OLLAMA_MODEL") or "gemma4:12b"
+    payload = {
+        "model": model,
+        "stream": False,
+        "messages": [{"role": "user", "content": "Call run_render with code that creates a blue cube."}],
+        "tools": [{
+            "type": "function",
+            "function": {
+                "name": "run_render",
+                "description": "Render a Blender scene from code",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"code": {"type": "string"}},
+                    "required": ["code"],
+                },
+            },
+        }],
+        "options": {"num_predict": 64},
+    }
+    try:
+        async with httpx.AsyncClient(timeout=_GPU_PROBE_TIMEOUT) as client:
+            resp = await client.post(f"{base}/api/chat", json=payload)
+            resp.raise_for_status()
+            j = resp.json()
+        mc = j.get("message", {})
+        types = (mc or {}).get("tool_calls") or []
+        content = (mc or {}).get("content") or ""
+        if types:
+            return True, f"ollama probe ok (tool_calls={len(types)})"
+        return False, f"ollama probe returned EMPTY/refusal (content={'empty' if not content else repr(content[:40])})"
+    except Exception as exc:  # noqa: BLE001
+        return False, f"ollama probe error: {type(exc).__name__}: {str(exc)[:120]}"
+
+
+async def _probe_gpu_or_raise(provider: str) -> None:
+    """Run the GPU probe up to _GPU_PROBE_MAX_FAILS times before raising.
+
+    Fails fast with a clear, diagnosable error instead of letting the ReAct
+    loop grind through MAX_TURNS against a backend that returns refusals.
+    """
+    if provider != "ollama":
+        return
+    last = "no probe attempted"
+    for attempt in range(1, _GPU_PROBE_MAX_FAILS + 1):
+        ok, detail = await _gpu_healthy(provider)
+        if ok:
+            return
+        last = detail
+        logger.warning("gpu probe failed attempt %s/%s: %s", attempt, _GPU_PROBE_MAX_FAILS, detail)
+        await asyncio.sleep(1)
+    raise RuntimeError(
+        f"Ollama backend unhealthy ({_GPU_PROBE_MAX_FAILS} consecutive probes failed): {last}. "
+        "Skipping codegen — check GPU pool health / context scheduling."
+    )
 
 
 def _build_react_instructions(engine: str, system_prompt: str) -> str:
@@ -373,6 +456,7 @@ async def run_agentic_codegen(
     compiled = graph.compile()
 
     resolved_provider = provider or active_provider()
+    await _probe_gpu_or_raise(resolved_provider)
     initial = {
         "messages": [HumanMessage(content=brief)],
         "brief": brief,

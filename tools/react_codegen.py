@@ -24,9 +24,12 @@ as the old code (VIGA_ENABLE_DOCKER_SANDBOX) so behavior is preserved.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 from typing import Annotated, Any, Callable, TypedDict
+
+logger = logging.getLogger("react_codegen")
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.tools import tool
@@ -237,7 +240,16 @@ async def run_agentic_codegen(
         # text contains a plausible script, render it via run_render instead of
         # letting the loop end at turn 1 and discard a complete answer.
         raw_text = getattr(response, "content", "") or ""
+        raw_repr = str(response)[:600]
         tool_calls = list(getattr(response, "tool_calls", None) or [])
+        logger.warning(
+            "codegen turn=%s tool_calls=%s content_type=%s content_chars=%s repr=%s",
+            state.get("turn_count", 0) + 1,
+            [tc.get("name") if isinstance(tc, dict) else getattr(tc, "name", "") for tc in tool_calls],
+            type(raw_text).__name__,
+            len(raw_text),
+            raw_repr,
+        )
         extract_len = 0
         salvaged = False
         if not tool_calls:
@@ -269,6 +281,7 @@ async def run_agentic_codegen(
                     "salvaged": salvaged,
                     "extract_len": extract_len,
                     "model_text": raw_text[-400:],
+                    "model_repr": raw_repr,
                 }
             ],
         }

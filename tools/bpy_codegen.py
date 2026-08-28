@@ -221,7 +221,9 @@ by including the following marker in your response:
 {prompt}
 
 Write the complete Blender Python script. Begin with `import bpy, json`.
-Include only the Python code — no markdown fences, no explanation.
+Do NOT write the code as plain response text — deliver it by calling the
+`run_render` tool with the full script in the `code` argument (the AGENTIC
+LOOP CONTRACT below is authoritative and overrides any wording elsewhere).
 """
 
 

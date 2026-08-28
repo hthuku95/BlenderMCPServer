@@ -2,6 +2,7 @@ import asyncio
 import inspect
 import json
 import os
+import traceback as _traceback
 import uuid
 from datetime import datetime, timezone
 from enum import Enum
@@ -52,6 +53,26 @@ def _now() -> str:
 
 def _make_job_id() -> str:
     return uuid.uuid4().hex[:24]
+
+
+def _format_failure_error(exc: Exception, limit_chars: int = 4000) -> str:
+    """Return a diagnosable error string: the exception message plus the
+    (trimmed) traceback, so a failure like 'agentic blender codegen failed
+    after N turns' carries the underlying cause instead of just str(e)."""
+    msg = str(exc) or exc.__class__.__name__
+    tb = _traceback.format_exc().strip()
+    if tb:
+        # Keep the exception line + the most useful stack frames.
+        lines = tb.splitlines()
+        header = lines[0] if lines else ""
+        tail = "\n".join(lines[-6:])
+        detail = f"{header}\n[trimmed {max(len(lines) - 6, 0)} lines]\n{tail}"
+        full = f"{msg}\n--- traceback ---\n{detail}"
+    else:
+        full = msg
+    if len(full) > limit_chars:
+        full = full[:limit_chars] + "\n...[truncated]"
+    return full
 
 
 # ---------------------------------------------------------------------------
@@ -441,7 +462,7 @@ class JobQueue:
             _put_status_sync(status)
         except Exception as e:
             status.state = State.FAILED.value
-            status.error = str(e)
+            status.error = _format_failure_error(e)
             status.finished_at = _now()
             _put_status_sync(status)
 

@@ -303,7 +303,7 @@ async def agent_node(state: DirectorState) -> dict:
     messages = state["messages"]
     full_messages = [SystemMessage(content=_SYSTEM)] + list(messages)
 
-    response = llm.invoke(full_messages)
+    response = await llm.ainvoke(full_messages)
     tool_count = len(response.tool_calls) if hasattr(response, "tool_calls") and response.tool_calls else 0
     await _record(state, "agent_planned", f"Planned {tool_count} tool calls", {
         "tool_calls": [t.name for t in response.tool_calls] if hasattr(response, "tool_calls") and response.tool_calls else [],
@@ -330,7 +330,7 @@ async def tools_node(state: DirectorState) -> dict:
     tool_label = ", ".join(tool_names) if tool_names else "tools"
     await _record(state, "rendering", f"Rendering: {tool_label}...")
 
-    result = node.invoke(state)
+    result = await node.ainvoke(state)
 
     assets = list(state.get("assets", []))
     asset_urls = []

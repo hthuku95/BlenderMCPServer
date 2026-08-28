@@ -69,7 +69,9 @@ _SYSTEM_PROMPT_TEMPLATE = textwrap.dedent("""\
     • Do NOT reference external files (no SVG/PNG/MP3 file paths).
     • Target duration: ~{duration:.1f} seconds total.
     • Background colour: {background}.
-    • Output ONLY valid Python code. No explanation, no markdown fences.
+    • Do NOT write the code as plain response text — deliver it by calling the
+      `run_render` tool with the full script in the `code` argument (the AGENTIC
+      LOOP CONTRACT below is authoritative and overrides any other wording).
 
     ═══ WHITEBOARD STYLE (when background="light" or prompt says "whiteboard") ═══
     • Set `self.camera.background_color = "#F5F0E8"`.

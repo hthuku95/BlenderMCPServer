@@ -57,6 +57,8 @@ class CodegenState(TypedDict):
     render_ok: bool
     final_path: str
     final_code: str
+    last_error: str
+    trace: list
 
 
 def _strip_fences(text: str) -> str:
@@ -64,6 +66,39 @@ def _strip_fences(text: str) -> str:
     if fence:
         return fence.group(1).strip()
     return text.strip()
+
+
+def _extract_script_from_text(text: str, engine: str) -> str:
+    """Best-effort extraction of a runnable script from a text-only model
+    response (the failure mode where a model answers in prose instead of
+    calling run_render). Returns "" when the text is not plausibly code.
+
+    This is the text-salvage path: a model that emits a complete script as
+    plain text still gets it rendered instead of the harness discarding it.
+    """
+    text = text or ""
+    fenced = re.search(r"```(?:python|blender|manim)?\s*\n(.*?)```", text, re.DOTALL)
+    candidate = fenced.group(1) if fenced else text
+    candidate = candidate.strip()
+    if not candidate:
+        return ""
+    # Require a definitive signal that this is code, not chat/explanations.
+    if engine == "blender":
+        strong = ("import bpy" in candidate, "bpy." in candidate)
+    else:
+        strong = ("import manim" in candidate, "from manim import" in candidate)
+    weak = any(h in candidate for h in ("=", "class ", "def ", "("))
+    if fenced:
+        # A fenced block is unambiguous — trust it even on weak signals.
+        return candidate
+    if not (any(strong) and weak) and not candidate.startswith("import "):
+        return ""
+    # Drop any trailing prose the model appended after a code block.
+    for marker in ("\nExplanation:", "\nHere is", "\n```"):
+        idx = candidate.find(marker)
+        if idx > 0:
+            candidate = candidate[:idx].rstrip()
+    return candidate
 
 
 def _clip(text: str, limit: int = _MAX_TOOL_RESULT_CHARS) -> str:
@@ -197,17 +232,42 @@ async def run_agentic_codegen(
         if len(history) > _MAX_HISTORY_MESSAGES:
             history = history[-_MAX_HISTORY_MESSAGES:]
         full_messages = [SystemMessage(content=system_content)] + history
-        response = llm.invoke(full_messages)
+        response = await llm.ainvoke(full_messages)
+        # TEXT-SALVAGE: if the model answered in prose (no tool call) but the
+        # text contains a plausible script, render it via run_render instead of
+        # letting the loop end at turn 1 and discard a complete answer.
+        tool_calls = list(getattr(response, "tool_calls", None) or [])
+        if not tool_calls:
+            code = _extract_script_from_text(getattr(response, "content", "") or "", engine)
+            if code:
+                response = AIMessage(
+                    content=getattr(response, "content", "") or "",
+                    tool_calls=[
+                        {
+                            "name": "run_render",
+                            "args": {"code": code},
+                            "id": f"salvage_{state.get('turn_count', 0)}",
+                        }
+                    ],
+                )
         return {
             "messages": [response],
             "turn_count": state.get("turn_count", 0) + 1,
             "render_ok": state.get("render_ok", False),
             "final_path": state.get("final_path", ""),
             "final_code": state.get("final_code", ""),
+            "last_error": state.get("last_error", ""),
+            "trace": state.get("trace", []) + [
+                {
+                    "turn": state.get("turn_count", 0) + 1,
+                    "tool_calls": [tc.get("name") if isinstance(tc, dict) else getattr(tc, "name", "") for tc in tool_calls],
+                    "salvaged": bool(list(getattr(response, "tool_calls", None) or [])) and not tool_calls,
+                }
+            ],
         }
 
     async def tools_node(state: CodegenState) -> dict:
-        result = ToolNode(tools).invoke(state)
+        result = await ToolNode(tools).ainvoke(state)
         last_tool = None
         for msg in result.get("messages", []):
             if getattr(msg, "name", "") == "run_render":
@@ -234,6 +294,16 @@ async def run_agentic_codegen(
                             code = args.get("code", "")
                             break
                 out["final_code"] = _strip_fences(code)
+            else:
+                out["last_error"] = str(data.get("error", "") or "")[:2000]
+        trace = list(state.get("trace", []))
+        if trace:
+            try:
+                trace[-1]["render"] = "ok" if data.get("ok") else "error"
+                trace[-1]["error_tail"] = str(data.get("error", "") or "")[-300:]
+                out["trace"] = trace
+            except Exception:
+                out["trace"] = trace
         return out
 
     def should_continue(state: CodegenState) -> str:
@@ -263,12 +333,23 @@ async def run_agentic_codegen(
         "render_ok": False,
         "final_path": "",
         "final_code": "",
+        "last_error": "",
+        "trace": [],
     }
     result = await compiled.ainvoke(initial)
 
     if result.get("render_ok") and result.get("final_path"):
         return (result["final_path"], result.get("final_code", ""))
+    last_error = (result.get("last_error") or "").strip()
+    if last_error:
+        # Root-cause wins: if the last render produced a real error, surface it
+        # so operators can see WHY codegen failed (not just "no successful render").
+        raise RuntimeError(
+            f"agentic {engine} codegen failed after {result.get('turn_count', max_turns)} "
+            f"turns with no successful render. Last error: {last_error[-2000:]}"
+        )
     raise RuntimeError(
         f"agentic {engine} codegen failed after {result.get('turn_count', max_turns)} "
-        f"turns with no successful render."
+        f"turns with no successful render (provider={resolved_provider}). "
+        f"trace={json.dumps(result.get('trace', []))}"
     )

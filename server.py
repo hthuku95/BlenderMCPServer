@@ -15,6 +15,7 @@ Deploy on Render:
     start command: python server.py   (or: xvfb-run -a python server.py)
 """
 
+import asyncio
 import json
 import logging
 import os
@@ -113,7 +114,7 @@ async def blender_execute_bpy_script(
         reference_image_url=reference_image_url,
     )
 
-    video_url = upload_render(result_path, prefix="scenes")
+    video_url = await asyncio.to_thread(upload_render, result_path, "scenes")
     try:
         os.unlink(result_path)
     except OSError:
@@ -204,7 +205,7 @@ async def manim_execute_script(
         quality=quality,
     )
 
-    video_url = upload_render(result_path, prefix="scenes")
+    video_url = await asyncio.to_thread(upload_render, result_path, "scenes")
     try:
         os.unlink(result_path)
     except OSError:
@@ -584,7 +585,7 @@ async def rest_get_job(request: Request) -> JSONResponse:
         return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
     job_id = request.path_params.get("job_id", "")
-    status = _job_queue.get(job_id)
+    status = await _job_queue.get_status(job_id)
     progress = await get_job_progress(job_id)
     if progress is None and status is not None and status.workflow_thread_id:
         progress = await get_job_progress_by_thread(status.workflow_thread_id)
@@ -626,7 +627,7 @@ async def rest_cancel_job(request: Request) -> JSONResponse:
         return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
     job_id = request.path_params.get("job_id", "")
-    status = _job_queue.get(job_id)
+    status = await _job_queue.get_status(job_id)
     if status is None:
         return JSONResponse({"error": f"Job '{job_id}' not found"}, status_code=404)
 

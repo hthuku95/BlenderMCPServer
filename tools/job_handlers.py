@@ -9,6 +9,7 @@ registered handler for "bpy_render" / "manim_render".
 
 from __future__ import annotations
 
+import asyncio
 import os
 import uuid
 from datetime import datetime, timezone
@@ -51,7 +52,7 @@ async def bpy_render_handler(**kwargs: Any) -> dict[str, Any]:
         details={"output_path": result_path},
     )
 
-    video_url = upload_render(result_path, prefix="scenes")
+    video_url = await asyncio.to_thread(upload_render, result_path, "scenes")
     response: dict[str, Any] = {
         "video_url": video_url,
         "duration": duration,
@@ -131,7 +132,7 @@ async def manim_render_handler(**kwargs: Any) -> dict[str, Any]:
         details={"output_path": result_path},
     )
 
-    video_url = upload_render(result_path, prefix="scenes")
+    video_url = await asyncio.to_thread(upload_render, result_path, "scenes")
     quality_map = {"l": "854x480", "m": "1280x720", "h": "1920x1080"}
     res = quality_map.get(quality, "1920x1080")
     response: dict[str, Any] = {

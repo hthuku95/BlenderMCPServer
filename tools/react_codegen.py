@@ -236,12 +236,17 @@ async def run_agentic_codegen(
         # TEXT-SALVAGE: if the model answered in prose (no tool call) but the
         # text contains a plausible script, render it via run_render instead of
         # letting the loop end at turn 1 and discard a complete answer.
+        raw_text = getattr(response, "content", "") or ""
         tool_calls = list(getattr(response, "tool_calls", None) or [])
+        extract_len = 0
+        salvaged = False
         if not tool_calls:
-            code = _extract_script_from_text(getattr(response, "content", "") or "", engine)
+            code = _extract_script_from_text(raw_text, engine)
+            extract_len = len(code)
             if code:
+                salvaged = True
                 response = AIMessage(
-                    content=getattr(response, "content", "") or "",
+                    content=raw_text,
                     tool_calls=[
                         {
                             "name": "run_render",
@@ -261,7 +266,9 @@ async def run_agentic_codegen(
                 {
                     "turn": state.get("turn_count", 0) + 1,
                     "tool_calls": [tc.get("name") if isinstance(tc, dict) else getattr(tc, "name", "") for tc in tool_calls],
-                    "salvaged": bool(list(getattr(response, "tool_calls", None) or [])) and not tool_calls,
+                    "salvaged": salvaged,
+                    "extract_len": extract_len,
+                    "model_text": raw_text[-400:],
                 }
             ],
         }

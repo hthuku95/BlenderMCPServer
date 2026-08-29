@@ -159,7 +159,6 @@ async def _gpu_healthy(provider: str) -> tuple[bool, str]:
                 },
             },
         }],
-        "options": {"num_predict": 64},
     }
     try:
         async with httpx.AsyncClient(timeout=_GPU_PROBE_TIMEOUT) as client:

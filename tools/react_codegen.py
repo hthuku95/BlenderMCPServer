@@ -60,7 +60,7 @@ _MAX_TOOL_RESULT_CHARS = int(os.getenv("VIGA_REACT_MAX_TOOL_RESULT", "2000"))
 # new context — surfaced as an empty/refusal response (no error). We fail fast
 # with a clear message instead of burning MAX_TURNS against a flaky backend.
 _GPU_PROBE_MAX_FAILS = int(os.getenv("VIGA_GPU_PROBE_MAX_FAILS", "2"))
-_GPU_PROBE_TIMEOUT = float(os.getenv("VIGA_GPU_PROBE_TIMEOUT", "25"))
+_GPU_PROBE_TIMEOUT = float(os.getenv("VIGA_GPU_PROBE_TIMEOUT", "60"))
 
 _VIGA_ENABLE_DOCKER = os.getenv("VIGA_ENABLE_DOCKER_SANDBOX", "").lower() in ("true", "1", "yes")
 

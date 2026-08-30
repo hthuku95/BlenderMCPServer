@@ -12,6 +12,53 @@ from tools.code_guards import apply_all as _apply_script_guards
 
 BLENDER_BIN = os.getenv("BLENDER_BIN", "blender")
 
+# GPU rendering: when the host has an NVIDIA GPU (g4dn fleet), enable Cycles
+# GPU (OptiX preferred, CUDA fallback) and force Cycles as the engine. On a
+# CPU-only box the probe finds no devices and everything falls back to the
+# previous behavior. Kill switch: BLENDER_GPU_RENDER=off.
+# NOTE: prologue must come FIRST in the script so the config applies before
+# any model-written render call; a script may still override the engine
+# afterwards (EEVEE also uses the GPU via EGL when a driver is present).
+_GPU_RENDER_ENABLED = os.getenv("BLENDER_GPU_RENDER", "auto").lower() not in ("off", "false", "0", "no")
+
+_GPU_PROLOGUE = r'''
+# ==== harness-gpu-prologue (prepended by BlenderMCPServer) ====
+import bpy as _h_bpy
+
+def _h_gpu_setup():
+    try:
+        _prefs = _h_bpy.context.preferences.addons.get('cycles')
+        if not _prefs:
+            print("HARNESS_GPU: cycles addon unavailable")
+            return
+        _cp = _prefs.preferences
+        _chosen = None
+        for _dtype in ('OPTIX', 'CUDA'):
+            try:
+                _cp.compute_device_type = _dtype
+                _cp.get_devices()
+                if any(d.type == _dtype for d in _cp.devices):
+                    _chosen = _dtype
+                    break
+            except Exception:
+                continue
+        if not _chosen:
+            print("HARNESS_GPU_DISABLED no OptiX/CUDA device")
+            return
+        for _d in _cp.devices:
+            _d.use = (_d.type == _chosen)
+        _scn = _h_bpy.context.scene
+        _scn.render.engine = 'CYCLES'
+        _scn.cycles.device = 'GPU'
+        _gpu_names = [d.name for d in _cp.devices if d.type == _chosen and d.use]
+        print("HARNESS_GPU_ENABLED type=%s devices=%s" % (_chosen, _gpu_names))
+    except Exception as _e:
+        print("HARNESS_GPU_ERROR %s" % _e)
+
+_h_gpu_setup()
+del _h_gpu_setup
+'''
+
 _RENDER_EPILOGUE = r'''
 # ==== harness-render-epilogue (appended by BlenderMCPServer) ====
 # Deterministically forces a render to the harness-requested output_path so a
@@ -33,8 +80,8 @@ _hdir = os.path.dirname(_out)
 if _hdir:
     os.makedirs(_hdir, exist_ok=True)
 _scn = bpy.context.scene
-_scn.render.resolution_x = 854
-_scn.render.resolution_y = 480
+_scn.render.resolution_x = 1920
+_scn.render.resolution_y = 1080
 _scn.render.fps = 60
 _scn.render.image_settings.file_format = 'FFMPEG'
 try:
@@ -107,6 +154,10 @@ def _run_blender_sync(script_path: str, args: dict | None, timeout: int) -> dict
         _existing = Path(script_path).read_text()
     except OSError:
         _existing = ""
+    if "harness-gpu-prologue" not in _existing and _GPU_RENDER_ENABLED:
+        with open(script_path, "w") as _f:
+            _f.write(_GPU_PROLOGUE + "\n" + _existing)
+    _existing = Path(script_path).read_text()
     if "harness-render-epilogue" not in _existing:
         with open(script_path, "a") as _f:
             _f.write("\n" + _RENDER_EPILOGUE + "\n")

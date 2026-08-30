@@ -50,6 +50,13 @@ def _h_gpu_setup():
         _scn = _h_bpy.context.scene
         _scn.render.engine = 'CYCLES'
         _scn.cycles.device = 'GPU'
+        # Denoiser kernels reload per frame on driver 580/T4 (measured 10.4s vs
+        # 2.3s per 1080p frame, Aug 30 2026) — disable; simple scenes at 64+
+        # samples render clean without it.
+        try:
+            _scn.cycles.use_denoising = False
+        except Exception:
+            pass
         _gpu_names = [d.name for d in _cp.devices if d.type == _chosen and d.use]
         print("HARNESS_GPU_ENABLED type=%s devices=%s" % (_chosen, _gpu_names))
     except Exception as _e:

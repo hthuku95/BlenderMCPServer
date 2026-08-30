@@ -55,12 +55,13 @@ _MAX_TOOL_RESULT_CHARS = int(os.getenv("VIGA_REACT_MAX_TOOL_RESULT", "2000"))
 
 # GPU health-probe guard. Before spending a full job's time on a ReAct loop,
 # check that the Ollama backend actually returns tool_calls on a minimal probe.
-# Ollama's single loaded gemma4:12b instance (NUM_PARALLEL=2 x 64K context) can
-# intermittently drop/short-circuit requests when the shared slot can't fit the
-# new context — surfaced as an empty/refusal response (no error). We fail fast
-# with a clear message instead of burning MAX_TURNS against a flaky backend.
-_GPU_PROBE_MAX_FAILS = int(os.getenv("VIGA_GPU_PROBE_MAX_FAILS", "2"))
-_GPU_PROBE_TIMEOUT = float(os.getenv("VIGA_GPU_PROBE_TIMEOUT", "60"))
+# A T4 running gemma4:12b takes 30-60s+ for ANY tool-call generation, and with
+# Ollama processing requests serially (NUM_PARALLEL=1) a probe can queue behind
+# an in-flight generation — so the probe needs generous timeout and retries to
+# avoid false "unhealthy" verdicts. We fail fast with a clear message instead
+# of burning MAX_TURNS against a genuinely broken backend.
+_GPU_PROBE_MAX_FAILS = int(os.getenv("VIGA_GPU_PROBE_MAX_FAILS", "3"))
+_GPU_PROBE_TIMEOUT = float(os.getenv("VIGA_GPU_PROBE_TIMEOUT", "120"))
 
 _VIGA_ENABLE_DOCKER = os.getenv("VIGA_ENABLE_DOCKER_SANDBOX", "").lower() in ("true", "1", "yes")
 

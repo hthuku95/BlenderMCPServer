@@ -116,8 +116,8 @@ Style: {style}
 ═══ OUTPUT REQUIREMENTS ═══
 • A JSON file path is passed as sys.argv[-1] (the last element after sys.argv[0]). Load it with: import json; args = json.load(open(sys.argv[-1])); output_path = args["output_path"]. Use this output_path for the render filepath.
 • Configure scene.render.filepath to the output path.
-• Set resolution: bpy.context.scene.render.resolution_x = 854,
-  bpy.context.scene.render.resolution_y = 480.
+• Set resolution: bpy.context.scene.render.resolution_x = 1920,
+  bpy.context.scene.render.resolution_y = 1080.
 • Set fps: bpy.context.scene.render.fps = 60.
 • Set output format to FFMPEG: bpy.context.scene.render.image_settings.file_format = 'FFMPEG'
 • Set FFMPEG codec: bpy.context.scene.render.ffmpeg.format = 'MPEG4'
@@ -134,6 +134,21 @@ Style: {style}
     where `output_path` is a Python variable with the target file path.
 
 ═══ USEFUL BPY PATTERNS ═══
+• Create a mesh object — PREFER the primitive ops (they create data + object
+  + link in one call and return the created object):
+    bpy.ops.mesh.primitive_cube_add(size=2, location=(0, 0, 0))
+    cube = bpy.context.active_object
+    # also: primitive_uv_sphere_add(radius=1), primitive_cylinder_add(...),
+    #       primitive_plane_add(size=10), primitive_torus_add(...)
+    # text objects: bpy.ops.object.text_add(); txt = bpy.context.active_object
+    #               txt.data.body = "Hello"
+
+• Create an EMPTY (locator/parent-only object) — bpy.data.objects.new REQUIRES
+  object_data as the 2nd positional arg; empties take None. NEVER pass
+  type='EMPTY' (that raises TypeError: required parameter "object_data"):
+    empty = bpy.data.objects.new("Container", None)
+    bpy.context.collection.objects.link(empty)
+
 • Add a camera:
     cam_data = bpy.data.cameras.new(name='Camera')
     cam_obj = bpy.data.objects.new('Camera', cam_data)

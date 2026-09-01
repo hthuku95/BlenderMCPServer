@@ -209,6 +209,14 @@ _TRANSIENT_MARKERS = (
     "unhealthy", "ServiceUnavailable", "503", "502", "429", "throttl",
     "connection reset", "connection closed",
 )
+# Checked BEFORE the transient scan: errors starting with these are
+# permanent regardless of what the traceback happens to contain (e.g. an
+# asyncio frame line could otherwise flip a budget-exhaustion into a retry).
+_PERMANENT_PREFIXES = (
+    "RENDER_BUDGET_EXCEEDED",
+    "No handler registered",
+    "RENDER_BUDGET",
+)
 
 
 def _iso_in_minutes(minutes: float) -> str:
@@ -227,7 +235,11 @@ def _lease_expired(iso_ts: str) -> bool:
 
 
 def _is_transient_failure(error_text: str) -> bool:
-    t = (error_text or "").lower()
+    t = (error_text or "").lstrip()
+    for prefix in _PERMANENT_PREFIXES:
+        if t.startswith(prefix):
+            return False
+    t = t.lower()
     return any(marker.lower() in t for marker in _TRANSIENT_MARKERS)
 
 

@@ -28,6 +28,7 @@ import json
 import logging
 import os
 import re
+import time
 from typing import Annotated, Any, Callable, TypedDict
 
 import httpx
@@ -52,6 +53,56 @@ MAX_REACT_TURNS = int(os.getenv("VIGA_REACT_MAX_TURNS", "10"))
 _MAX_HISTORY_MESSAGES = int(os.getenv("VIGA_REACT_MAX_HISTORY", "6"))
 _EMPTY_RESPONSE_MAX_RETRIES = int(os.getenv("VIGA_REACT_EMPTY_RETRIES", "2"))
 _MAX_TOOL_RESULT_CHARS = int(os.getenv("VIGA_REACT_MAX_TOOL_RESULT", "2000"))
+
+# GPU admission control (Phase 2): Ollama serves ~1 concurrent request per
+# GPU (NUM_PARALLEL=1); concurrent codegen loops queue behind each other and
+# starve probes/turns (observed Aug 30-31: two interleaved jobs doubled each
+# other's latency and blew the 1800s JOB_TIMEOUT). Bound concurrent ReAct
+# loops per node; 0 disables the limit. Workers still receive jobs — they
+# just wait here for a codegen slot.
+_CODEGEN_CONCURRENCY = int(os.getenv("CODEGEN_MAX_CONCURRENT", "1"))
+_codegen_sem: asyncio.Semaphore | None = None
+
+
+def _codegen_semaphore() -> asyncio.Semaphore | None:
+    global _codegen_sem
+    if _CODEGEN_CONCURRENCY <= 0:
+        return None
+    if _codegen_sem is None:
+        _codegen_sem = asyncio.Semaphore(_CODEGEN_CONCURRENCY)
+    return _codegen_sem
+
+
+# Render budget (Phase 2): one shared deadline across all ReAct turns.
+# Enforced at turn boundaries so a job that cannot converge fails FAST with a
+# clear error instead of being killed mid-render by the whole-job timeout.
+# The whole-job JOB_TIMEOUT must remain the larger number (backstop only).
+_RENDER_BUDGET_SECS = float(os.getenv("RENDER_BUDGET_SECS", "1200"))
+
+# Durable execution (Phase 2): checkpoint the graph after every turn via
+# LangGraph's Postgres saver so a crashed/reclaimed run resumes instead of
+# restarting from turn 1. Kill switch: VIGA_CHECKPOINTER=off.
+_CHECKPOINTER_ENABLED = os.getenv("VIGA_CHECKPOINTER", "on").lower() not in ("off", "false", "0", "no")
+_CHECKPOINT_MAX_AGE_SECS = float(os.getenv("VIGA_CHECKPOINT_MAX_AGE_SECS", str(6 * 3600)))
+
+# Cancel polling (Phase 2): cross-node cancel is honored by checking the
+# job's DDB state between turns. 0 disables polling.
+_CANCEL_POLL_SECS = float(os.getenv("VIGA_CANCEL_POLL_SECS", "30"))
+
+
+class JobCancelled(RuntimeError):
+    """Raised between turns when the job was cancelled in DDB (cross-node)."""
+
+
+async def _job_cancelled(thread_id: str) -> bool:
+    if not thread_id:
+        return False
+    try:
+        from tools.job_queue import _async_get_status
+        status = await _async_get_status(thread_id)
+        return bool(status and status.state == "cancelled")
+    except Exception:
+        return False
 
 # GPU health-probe guard. Before spending a full job's time on a ReAct loop,
 # check that the Ollama backend actually returns tool_calls on a minimal probe.
@@ -236,6 +287,7 @@ async def run_agentic_codegen(
     docker_script_type: str,
     provider: str | None = None,
     max_turns: int = MAX_REACT_TURNS,
+    thread_id: str = "",
 ) -> tuple[str, str]:
     """
     Run the ReAct codegen loop. Returns (output_path, code).
@@ -254,6 +306,34 @@ async def run_agentic_codegen(
         max_turns:           Loop cap (env VIGA_REACT_MAX_TURNS).
     """
     system_content = _build_react_instructions(engine, system_prompt)
+
+    # Phase 2: admission control — one codegen loop per node by default.
+    sem = _codegen_semaphore()
+    if sem is not None:
+        await sem.acquire()
+    deadline = (time.monotonic() + _RENDER_BUDGET_SECS) if _RENDER_BUDGET_SECS > 0 else None
+    last_cancel_probe = 0.0
+
+    def _budget_left() -> float:
+        if deadline is None:
+            return float("inf")
+        return deadline - time.monotonic()
+
+    async def _check_turn_gate() -> None:
+        """Raised between turns: budget exhaustion (hard stop) or a
+        cross-node cancel observed in DDB."""
+        nonlocal last_cancel_probe
+        left = _budget_left()
+        if left <= 0:
+            raise RuntimeError(
+                f"RENDER_BUDGET_EXCEEDED after {_RENDER_BUDGET_SECS:.0f}s budget "
+                f"({engine} codegen did not converge; raise RENDER_BUDGET_SECS or fix codegen feedback)"
+            )
+        now = time.monotonic()
+        if _CANCEL_POLL_SECS > 0 and (now - last_cancel_probe) >= _CANCEL_POLL_SECS:
+            last_cancel_probe = now
+            if await _job_cancelled(thread_id):
+                raise JobCancelled(f"job {thread_id} cancelled (observed in DDB between turns)")
 
     @tool
     async def web_search(query: str, num_results: int = 5) -> str:
@@ -310,6 +390,7 @@ async def run_agentic_codegen(
         tools.insert(2, docker_validate)
 
     async def agent_node(state: CodegenState) -> dict:
+        await _check_turn_gate()
         llm = get_chat_model(
             temperature=0.3,
             max_tokens=8192,
@@ -440,6 +521,8 @@ async def run_agentic_codegen(
     def should_continue(state: CodegenState) -> str:
         if state.get("render_ok"):
             return END
+        if _budget_left() <= 0:
+            return END
         if state.get("turn_count", 0) >= max_turns:
             return END
         last = state["messages"][-1]
@@ -447,16 +530,29 @@ async def run_agentic_codegen(
             return "tools"
         return END
 
-    graph = StateGraph(CodegenState)
-    graph.add_node("agent", agent_node)
-    graph.add_node("tools", tools_node)
-    graph.set_entry_point("agent")
-    graph.add_conditional_edges("agent", should_continue, {"tools": "tools", END: END})
-    graph.add_edge("tools", "agent")
-    compiled = graph.compile()
+    def _build_graph(checkpointer=None):
+        g = StateGraph(CodegenState)
+        g.add_node("agent", agent_node)
+        g.add_node("tools", tools_node)
+        g.set_entry_point("agent")
+        g.add_conditional_edges("agent", should_continue, {"tools": "tools", END: END})
+        g.add_edge("tools", "agent")
+        return g.compile(checkpointer=checkpointer) if checkpointer else g.compile()
 
     resolved_provider = provider or active_provider()
     await _probe_gpu_or_raise(resolved_provider)
+
+    checkpointer = None
+    cfg = None
+    if _CHECKPOINTER_ENABLED and thread_id:
+        try:
+            from tools.workflow_runtime import get_checkpointer, workflow_config
+            checkpointer = await get_checkpointer()
+            cfg = workflow_config(thread_id)
+        except Exception as exc:
+            logger.warning("codegen checkpointer unavailable, running without: %s", exc)
+            checkpointer = None
+
     initial = {
         "messages": [HumanMessage(content=brief)],
         "brief": brief,
@@ -468,7 +564,48 @@ async def run_agentic_codegen(
         "last_error": "",
         "trace": [],
     }
-    result = await compiled.ainvoke(initial)
+
+    resume = False
+    if checkpointer is not None and cfg is not None:
+        try:
+            tuple_ = await checkpointer.aget_tuple(cfg)
+            if tuple_ and tuple_.checkpoint:
+                saved = tuple_.checkpoint.get("channel_values", {}) or {}
+                saved_turns = int(saved.get("turn_count", 0) or 0)
+                saved_ok = bool(saved.get("render_ok", False))
+                age_ok = True
+                ts = getattr(tuple_, "checkpoint", {}).get("ts") if hasattr(tuple_, "checkpoint") else None
+                if ts:
+                    try:
+                        from datetime import datetime as _dt
+                        age = time.time() - _dt.fromisoformat(str(ts).replace("Z", "+00:00")).timestamp()
+                        age_ok = age <= _CHECKPOINT_MAX_AGE_SECS
+                    except Exception:
+                        pass
+                if age_ok and 0 < saved_turns < max_turns and not saved_ok:
+                    resume = True
+                    logger.warning("codegen resume thread=%s from turn=%s", thread_id, saved_turns)
+        except Exception as exc:
+            logger.warning("codegen checkpoint probe failed, fresh start: %s", exc)
+            resume = False
+
+    try:
+        _graph = _build_graph(checkpointer)
+        if resume:
+            result = await _graph.ainvoke(None, config=cfg)
+        elif cfg:
+            result = await _graph.ainvoke(initial, config=cfg)
+        else:
+            result = await _graph.ainvoke(initial)
+    finally:
+        if sem is not None:
+            sem.release()
+
+    if _budget_left() <= 0 and not result.get("render_ok"):
+        raise RuntimeError(
+            f"RENDER_BUDGET_EXCEEDED after {_RENDER_BUDGET_SECS:.0f}s budget "
+            f"({engine} codegen did not converge; raise RENDER_BUDGET_SECS or fix codegen feedback)"
+        )
 
     if result.get("render_ok") and result.get("final_path"):
         return (result["final_path"], result.get("final_code", ""))

@@ -228,7 +228,7 @@ async def _run_vlm_tournament(results: list[dict], description: str) -> int:
     return candidates[0][0] if candidates else 0
 
 
-async def _react_render_single(description: str, duration: float, background: str, output_path: str, transparent: bool, quality: str) -> tuple[str, str]:
+async def _react_render_single(description: str, duration: float, background: str, output_path: str, transparent: bool, quality: str, thread_id: str = "") -> tuple[str, str]:
     """Agentic ReAct path: the LLM drives codegen + web search + docker validation
     + rendering turn-by-turn instead of a hard-coded retry loop."""
     from tools.react_codegen import run_agentic_codegen
@@ -267,14 +267,15 @@ async def _react_render_single(description: str, duration: float, background: st
         store_success=lambda code, b: store_success("manim", code, b),
         rag_collection="manim",
         docker_script_type="manim",
+        thread_id=thread_id,
     )
 
 
-async def _retry_render_single(description: str, duration: float, background: str, output_path: str, transparent: bool, quality: str) -> tuple[str, str]:
+async def _retry_render_single(description: str, duration: float, background: str, output_path: str, transparent: bool, quality: str, thread_id: str = "") -> tuple[str, str]:
     from tools.manim_runner import run_manim_scene
 
     if VIGA_REACT_LOOP:
-        return await _react_render_single(description, duration, background, output_path, transparent, quality)
+        return await _react_render_single(description, duration, background, output_path, transparent, quality, thread_id=thread_id)
 
     code = ""
     last_error = ""
@@ -340,6 +341,7 @@ async def generate_and_run_manim(
     output_path: Optional[str] = None,
     transparent: bool = False,
     quality: str = "m",
+    thread_id: str = "",
 ) -> str:
     if output_path is None:
         ext = ".mov" if transparent else ".mp4"
@@ -348,7 +350,7 @@ async def generate_and_run_manim(
     async def _render_manim(prompt: str, **kwargs) -> tuple[str, str]:
         description = prompt
         if not USE_VLM_TOURNAMENT:
-            return await _retry_render_single(description, duration, background, output_path, transparent, quality)
+            return await _retry_render_single(description, duration, background, output_path, transparent, quality, thread_id=thread_id)
 
         candidate_dir = tempfile.mkdtemp(prefix="manim_candidates_")
         try:
@@ -372,7 +374,7 @@ async def generate_and_run_manim(
             if "path" in winner and os.path.exists(winner["path"]):
                 shutil.copy2(winner["path"], output_path)
                 return (output_path, winner.get("code", ""))
-            return await _retry_render_single(description, duration, background, output_path, transparent, quality)
+            return await _retry_render_single(description, duration, background, output_path, transparent, quality, thread_id=thread_id)
         finally:
             shutil.rmtree(candidate_dir, ignore_errors=True)
 

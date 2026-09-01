@@ -420,7 +420,7 @@ async def _run_vlm_tournament(results: list[dict], prompt: str) -> int:
     return candidates[0][0] if candidates else 0
 
 
-async def _react_render_single(prompt: str, duration: float, style: str, output_path: str, reference_image_url: str) -> tuple[str, str]:
+async def _react_render_single(prompt: str, duration: float, style: str, output_path: str, reference_image_url: str, thread_id: str = "") -> tuple[str, str]:
     """Agentic ReAct path: the LLM drives codegen + web search + docker validation
     + rendering turn-by-turn instead of a hard-coded retry loop."""
     from tools.react_codegen import run_agentic_codegen
@@ -456,13 +456,14 @@ async def _react_render_single(prompt: str, duration: float, style: str, output_
         store_success=lambda code, b: store_success("bpy", code, b),
         rag_collection="bpy",
         docker_script_type="blender",
+        thread_id=thread_id,
     )
 
 
-async def _retry_render_single(prompt: str, duration: float, style: str, output_path: str, reference_image_url: str) -> tuple[str, str]:
+async def _retry_render_single(prompt: str, duration: float, style: str, output_path: str, reference_image_url: str, thread_id: str = "") -> tuple[str, str]:
     """Standard single-candidate approach with retry loop. Returns (output_path, code)."""
     if VIGA_REACT_LOOP:
-        return await _react_render_single(prompt, duration, style, output_path, reference_image_url)
+        return await _react_render_single(prompt, duration, style, output_path, reference_image_url, thread_id=thread_id)
 
     from tools.blender_runner import run_blender_script
 
@@ -528,6 +529,7 @@ async def generate_and_run_bpy(
     style: str = "cinematic",
     output_path: Optional[str] = None,
     reference_image_url: str = "",
+    thread_id: str = "",
     **extra_args,
 ) -> str:
     if output_path is None:
@@ -536,7 +538,7 @@ async def generate_and_run_bpy(
 
     async def _render_bpy(prompt: str, **kwargs) -> tuple[str, str]:
         if not USE_VLM_TOURNAMENT:
-            return await _retry_render_single(prompt, duration, style, output_path, reference_image_url)
+            return await _retry_render_single(prompt, duration, style, output_path, reference_image_url, thread_id=thread_id)
 
         candidate_dir = tempfile.mkdtemp(prefix="bpy_candidates_")
         try:

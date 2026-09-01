@@ -351,43 +351,13 @@ async def blender_investigate_render(scene_name: str = "Scene") -> str:
     return json.dumps(result)
 
 
-@mcp.tool()
-async def blender_save_blend_state(job_id: str) -> str:
-    from tools.blender_runner import save_blend_state as _sbs
-    return await _sbs(job_id)
-
-
-@mcp.tool()
-async def blender_undo_last_step(job_id: str) -> str:
-    from tools.blender_runner import undo_last_step as _uls
-    result = await _uls(job_id)
-    return json.dumps(result)
-
-
-@mcp.tool()
-async def blender_cleanup_blend_states(job_id: str) -> str:
-    from tools.blender_runner import cleanup_blend_states as _cbs
-    result = await _cbs(job_id)
-    return json.dumps({"success": result})
-
-
-@mcp.tool()
-async def blender_verifier_review(
-    prompt: str,
-    video_url: str,
-    code: str = "",
-    blender_file_path: str = "",
-    iteration: int = 1,
-) -> str:
-    from agents.verifier import verify_and_suggest_fixes as _vsf
-    result = await _vsf(
-        prompt=prompt,
-        video_url=video_url,
-        code=code,
-        blender_file_path=blender_file_path,
-        previous_feedback=[{iteration: iteration}] if iteration > 1 else None,
-    )
-    return json.dumps(result)
+# ---------------------------------------------------------------------------
+# REMOVED (Phase 2, §40.3 gap #1/#2): blender_save_blend_state,
+# blender_undo_last_step, blender_cleanup_blend_states called
+# blender_runner methods that do not exist (ImportError at call time), and
+# blender_verifier_review was a fake verifier that passed the video URL as
+# TEXT into a text-only LLM — it never observed a single frame. Re-advertise
+# tools only when they are implemented and tested (Anthropic ACI principle).
 # ---------------------------------------------------------------------------
 
 async def _run_director_handler(**kwargs):
@@ -418,10 +388,6 @@ TOOL_HANDLERS = {
     "blender_set_keyframe":         blender_set_keyframe,
     "blender_investigate_object":   blender_investigate_object,
     "blender_investigate_render":   blender_investigate_render,
-    "blender_save_blend_state":     blender_save_blend_state,
-    "blender_undo_last_step":       blender_undo_last_step,
-    "blender_cleanup_blend_states": blender_cleanup_blend_states,
-    "blender_verifier_review":      blender_verifier_review,
 }
 
 

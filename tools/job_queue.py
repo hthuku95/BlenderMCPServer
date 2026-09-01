@@ -1,10 +1,12 @@
 import asyncio
 import inspect
 import json
+import logging
 import os
+import socket
 import traceback as _traceback
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from enum import Enum
 from dataclasses import dataclass, field, asdict
 from typing import Any, Awaitable, Callable, Optional, Dict
@@ -107,6 +109,8 @@ class JobStatus:
     finished_at: str = ""
     recoveries: int = 0
     workflow_thread_id: str = ""
+    claimed_by: str = ""
+    lease_expires_at: str = ""
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -190,6 +194,127 @@ def _scan_orphans_sync() -> list[JobStatus]:
     return [JobStatus.from_dict(i) for i in resp.get("Items", [])]
 
 
+# ---------------------------------------------------------------------------
+# Lease / heartbeat (Phase 2 durability)
+# ---------------------------------------------------------------------------
+
+_NODE_ID = (socket.gethostname() + "-" + str(os.getpid()))[:80]
+_LEASE_MINUTES = float(os.getenv("JOB_LEASE_MINUTES", "15"))
+_LEASE_RENEW_SECS = float(os.getenv("JOB_LEASE_RENEW_SECS", "60"))
+_JOB_MAX_RECEIVES = int(os.getenv("JOB_MAX_RECEIVES", "3"))
+# Failures whose message contains one of these are considered transient and
+# eligible for SQS redelivery retry (up to JOB_MAX_RECEIVES receives).
+_TRANSIENT_MARKERS = (
+    "ReadTimeout", "ConnectError", "ConnectionError", "timed out",
+    "unhealthy", "ServiceUnavailable", "503", "502", "429", "throttl",
+    "connection reset", "connection closed",
+)
+
+
+def _iso_in_minutes(minutes: float) -> str:
+    return (
+        datetime.now(timezone.utc) + timedelta(minutes=minutes)
+    ).isoformat()
+
+
+def _lease_expired(iso_ts: str) -> bool:
+    if not iso_ts:
+        return True
+    try:
+        return datetime.now(timezone.utc) >= datetime.fromisoformat(iso_ts)
+    except ValueError:
+        return True
+
+
+def _is_transient_failure(error_text: str) -> bool:
+    t = (error_text or "").lower()
+    return any(marker.lower() in t for marker in _TRANSIENT_MARKERS)
+
+
+def _render_budget_effective() -> float:
+    """Mirror react_codegen's RENDER_BUDGET_SECS so JOB_TIMEOUT can be raised
+    above it (the budget must fire before the whole-job backstop)."""
+    try:
+        from tools.react_codegen import _RENDER_BUDGET_SECS as _rb
+        v = float(_rb)
+        return v if v > 0 else 1200.0
+    except Exception:
+        return 1200.0
+
+
+async def _ddb_job_cancelled(job_id: str) -> bool:
+    """Cross-node cancel check: cancel() writes CANCELLED to DDB; any node's
+    worker sees it here."""
+    try:
+        st = await _async_get_status(job_id)
+        return bool(st and st.state == State.CANCELLED.value)
+    except Exception:
+        return False
+
+
+async def _heartbeat_loop(job_id: str, stop: asyncio.Event) -> None:
+    """Renew this worker's lease every _LEASE_RENEW_SECS while the job runs.
+
+    Uses a targeted conditional update so a late heartbeat can never clobber
+    a terminal state written by the terminal path (or another owner)."""
+    while True:
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=_LEASE_RENEW_SECS)
+            return  # stop set
+        except asyncio.TimeoutError:
+            pass
+        try:
+            await asyncio.to_thread(
+                _renew_lease_sync, job_id, _iso_in_minutes(_LEASE_MINUTES)
+            )
+        except Exception:
+            pass
+
+
+def _renew_lease_sync(job_id: str, lease_iso: str) -> None:
+    _lazy_aws()
+    _table.update_item(
+        Key={"job_id": job_id},
+        UpdateExpression="SET lease_expires_at = :l",
+        ExpressionAttributeValues={":l": lease_iso, ":r": State.RUNNING.value, ":n": _NODE_ID},
+        ConditionExpression="attribute_exists(job_id) AND #s = :r AND claimed_by = :n",
+        ExpressionAttributeNames={"#s": "state"},
+    )
+
+
+def _claim_job_sync(job_id: str, lease_iso: str, started_at: str) -> bool:
+    """Atomically claim a job for this worker. Succeeds only if the job is
+    NOT already running with a fresh lease (guards against duplicate
+    execution when SQS redelivers a message whose visibility expired while
+    the original worker is still alive). ISO-8601 UTC timestamps compare
+    correctly as strings."""
+    _lazy_aws()
+    try:
+        _table.update_item(
+            Key={"job_id": job_id},
+            UpdateExpression=(
+                "SET #s = :running, claimed_by = :node, "
+                "lease_expires_at = :lease, started_at = :started"
+            ),
+            ConditionExpression=(
+                "#s <> :running OR attribute_not_exists(lease_expires_at) "
+                "OR lease_expires_at < :now"
+            ),
+            ExpressionAttributeNames={"#s": "state"},
+            ExpressionAttributeValues={
+                ":running": State.RUNNING.value,
+                ":node": _NODE_ID,
+                ":lease": lease_iso,
+                ":started": started_at,
+                ":now": datetime.now(timezone.utc).isoformat(),
+            },
+        )
+        return True
+    except Exception:
+        # ConditionalCheckFailedException -> another live worker owns it.
+        return False
+
+
 def _sqs_send_sync(status: JobStatus) -> str:
     _lazy_aws()
     resp = _sqs.send_message(
@@ -208,9 +333,14 @@ def _sqs_receive_sync() -> list[dict]:
     _lazy_aws()
     resp = _sqs.receive_message(
         QueueUrl=SQS_QUEUE_URL,
-        MaxNumberOfMessages=10,
+        # Phase 2: one message per worker iteration. Each worker task handles
+        # its job end-to-end; JOB_QUEUE_WORKERS workers = that many parallel
+        # jobs. Batch-receive + sequential processing caused head-of-line
+        # blocking where messages 2..10 could outlive the visibility window.
+        MaxNumberOfMessages=1,
         WaitTimeSeconds=5,
         VisibilityTimeout=int(os.getenv("SQS_VISIBILITY_TIMEOUT", "1800")),
+        AttributeNames=["All"],  # ApproximateReceiveCount for retry policy
     )
     return resp.get("Messages", [])
 
@@ -270,16 +400,45 @@ async def _record_cancelled_progress_async(status: JobStatus) -> None:
 
 
 async def _recover_orphans_async(queue: "JobQueue") -> None:
+    """Phase 2 recovery: a RUNNING job whose lease has expired belongs to a
+    dead worker — requeue it (SQS redelivery) instead of the old behavior of
+    marking it RECOVERED and losing the work. Fresh leases (another live
+    worker, multi-node fleets) are left alone. Retry count is capped so a
+    poison job cannot loop forever."""
+    logger = logging.getLogger("job_queue")
     try:
         orphans = await asyncio.to_thread(_scan_orphans_sync)
-        for o in orphans:
-            error_msg = f"orphan recovered on restart (was {o.state})"
-            o.state = State.RECOVERED.value
-            o.error = error_msg
-            o.finished_at = _now()
-            await _async_put_status(o)
     except Exception:
-        pass
+        logger.warning("orphan scan failed", exc_info=True)
+        return
+    for o in orphans:
+        try:
+            if o.state != State.RUNNING.value:
+                # QUEUED/PENDING records are left alone: their SQS messages
+                # are usually still in flight; blind re-sends would duplicate
+                # execution (and resurrect days-old stale rows).
+                continue
+            if not _lease_expired(o.lease_expires_at):
+                logger.info("orphan %s has a fresh lease (%s), leaving it", o.job_id, o.claimed_by)
+                continue
+            if int(o.recoveries or 0) >= _JOB_MAX_RECEIVES:
+                o.state = State.FAILED.value
+                o.error = f"permanently failed after {o.recoveries} recovery attempts"
+                o.finished_at = _now()
+                await _async_put_status(o)
+                logger.warning("orphan %s exceeded recovery cap, marked failed", o.job_id)
+                continue
+            o.state = State.QUEUED.value
+            o.error = f"requeued by recovery (previous owner {o.claimed_by or 'unknown'} died or lease expired)"
+            o.recoveries = int(o.recoveries or 0) + 1
+            o.claimed_by = ""
+            o.lease_expires_at = ""
+            o.started_at = ""
+            await _async_put_status(o)
+            await _async_sqs_send(o)
+            logger.warning("orphan %s requeued for retry (recoveries=%s)", o.job_id, o.recoveries)
+        except Exception:
+            logger.warning("orphan recovery failed for %s", o.job_id, exc_info=True)
 
 
 # ---------------------------------------------------------------------------
@@ -364,37 +523,80 @@ class JobQueue:
             self._workers.append(task)
 
     async def _worker(self) -> None:
+        logger = logging.getLogger("job_queue")
         while True:
+            messages: list[dict] = []
             try:
                 messages = await _async_sqs_receive()
-                for msg in messages:
+            except Exception:
+                logger.warning("sqs receive failed, retrying in 5s", exc_info=True)
+                await asyncio.sleep(5)
+                continue
+            for msg in messages:
+                try:
                     body = json.loads(msg["Body"])
                     status = JobStatus.from_dict(body)
                     receipt_handle = msg["ReceiptHandle"]
-                    await self._handle_job(status, receipt_handle)
-            except Exception:
-                pass
+                    receive_count = int(
+                        (msg.get("Attributes") or {}).get("ApproximateReceiveCount", "1") or "1"
+                    )
+                    await self._handle_job(status, receipt_handle, receive_count)
+                except Exception:
+                    # Never let one poison message kill the worker; log loudly
+                    # instead of the old silent `except: pass`.
+                    logger.warning("worker failed to process message", exc_info=True)
             await asyncio.sleep(1)
 
-    async def _handle_job(self, status: JobStatus, receipt_handle: str) -> None:
+    async def _handle_job(self, status: JobStatus, receipt_handle: str, receive_count: int = 1) -> None:
         job_id = status.job_id
+        logger = logging.getLogger("job_queue")
+        heartbeat_task: Optional[asyncio.Task] = None
+        stop_heartbeat = asyncio.Event()
         try:
-            if self.is_cancelled(job_id):
-                status.state = State.CANCELLED.value
-                status.finished_at = _now()
-                _put_status_sync(status)
-                asyncio.create_task(_record_cancelled_progress_async(status))
+            # IDEMPOTENCY ON REDELIVERY: if the job already reached a terminal
+            # state (e.g. completed by a previous receive whose delete failed,
+            # or marked cancelled cross-node), skip reprocessing and delete.
+            fresh = await _async_get_status(job_id)
+            if fresh and fresh.state in (
+                State.COMPLETED.value, State.FAILED.value, State.CANCELLED.value,
+            ):
+                logger.info("job %s already terminal (%s), skipping redelivery", job_id, fresh.state)
                 await _async_sqs_delete_message(receipt_handle)
                 return
 
-            args = status.args or {}
+            args = fresh.args if fresh and fresh.args else (status.args or {})
+            if fresh:
+                status = fresh
             handler = self._tool_registry.get(status.tool)
-            open("/tmp/jq_debug.log","a").write(f"JQ_DEBUG job_id={job_id} tool={status.tool} handler_found={handler is not None} registry_keys={list(self._tool_registry.keys())}\n")
 
-            status.state = State.RUNNING.value
-            status.started_at = _now()
-            status.result = None
-            await _async_put_status(status)
+            # ATOMIC CLAIM: only one live worker may own a job. If the claim
+            # fails, another worker holds a fresh lease (our message was a
+            # visibility-expiry redelivery) — skip and drop our copy.
+            lease_iso = _iso_in_minutes(_LEASE_MINUTES) if _LEASE_MINUTES > 0 else ""
+            if _LEASE_MINUTES > 0:
+                if not await asyncio.to_thread(
+                    _claim_job_sync, job_id, lease_iso, _now()
+                ):
+                    logger.warning(
+                        "job %s claim rejected (fresh lease held by %s), skipping",
+                        job_id, (fresh.claimed_by if fresh else "") or "unknown",
+                    )
+                    await _async_sqs_delete_message(receipt_handle)
+                    return
+                status.state = State.RUNNING.value
+                status.started_at = _now()
+                status.result = None
+                status.claimed_by = _NODE_ID
+                status.lease_expires_at = lease_iso
+                await _async_put_status(status)
+                heartbeat_task = asyncio.create_task(
+                    _heartbeat_loop(job_id, stop_heartbeat)
+                )
+            else:
+                status.state = State.RUNNING.value
+                status.started_at = _now()
+                status.result = None
+                await _async_put_status(status)
 
             await record_job_progress(
                 job_id=job_id,
@@ -408,11 +610,16 @@ class JobQueue:
             )
 
             _JOB_TIMEOUT = int(os.getenv("JOB_TIMEOUT_SECS", "1500"))
+            # The whole-job timeout is a backstop ONLY; the render budget
+            # (RENDER_BUDGET_SECS, enforced between codegen turns) must fire
+            # first so jobs fail cleanly instead of being killed mid-render.
+            if _JOB_TIMEOUT <= _render_budget_effective():
+                _JOB_TIMEOUT = int(_render_budget_effective() + 300)
 
             if handler is None:
                 raise ValueError(f"No handler registered for tool {status.tool}")
 
-            if self.is_cancelled(job_id):
+            if await _ddb_job_cancelled(job_id):
                 status.state = State.CANCELLED.value
                 status.finished_at = _now()
                 _put_status_sync(status)
@@ -421,9 +628,13 @@ class JobQueue:
                 return
 
             handler_args = self._filter_handler_args(handler, args)
-            result = await asyncio.wait_for(
-                handler(**handler_args), timeout=_JOB_TIMEOUT
-            )
+            try:
+                result = await asyncio.wait_for(
+                    handler(**handler_args), timeout=_JOB_TIMEOUT
+                )
+            except asyncio.TimeoutError as te:
+                # Give the message text so the transient classifier sees it.
+                raise RuntimeError(f"Job timed out after {_JOB_TIMEOUT}s") from te
 
             if self.is_cancelled(job_id):
                 status.state = State.CANCELLED.value
@@ -455,16 +666,47 @@ class JobQueue:
             status.state = State.CANCELLED.value
             status.finished_at = _now()
             _put_status_sync(status)
-        except asyncio.TimeoutError:
-            status.state = State.FAILED.value
-            status.error = f"Job timed out after {_JOB_TIMEOUT}s"
-            status.finished_at = _now()
-            _put_status_sync(status)
         except Exception as e:
-            status.state = State.FAILED.value
-            status.error = _format_failure_error(e)
-            status.finished_at = _now()
-            _put_status_sync(status)
+            error_text = _format_failure_error(e)
+            from tools.react_codegen import JobCancelled
+            if isinstance(e, JobCancelled):
+                status.state = State.CANCELLED.value
+                status.error = error_text
+                status.finished_at = _now()
+                _put_status_sync(status)
+                logger.warning("job %s cancelled between turns", job_id)
+            elif (
+                _is_transient_failure(error_text)
+                and receive_count < _JOB_MAX_RECEIVES
+                and status.recoveries < _JOB_MAX_RECEIVES
+            ):
+                # TRANSIENT: give the message back to SQS (don't delete) so it
+                # redelivers after the visibility window. DDB state goes back
+                # to queued; the redelivered receive reprocesses idempotently.
+                status.state = State.QUEUED.value
+                status.error = error_text
+                status.recoveries = int(status.recoveries or 0) + 1
+                status.claimed_by = ""
+                status.lease_expires_at = ""
+                status.finished_at = ""
+                _put_status_sync(status)
+                logger.warning(
+                    "job %s transient failure (receive %s/%s), requeueing: %s",
+                    job_id, receive_count, _JOB_MAX_RECEIVES, str(e)[:300],
+                )
+                return  # deliberately do NOT delete the SQS message
+            else:
+                status.state = State.FAILED.value
+                status.error = error_text
+                status.finished_at = _now()
+                _put_status_sync(status)
+        finally:
+            stop_heartbeat.set()
+            if heartbeat_task is not None:
+                try:
+                    await asyncio.wait_for(heartbeat_task, timeout=5)
+                except Exception:
+                    heartbeat_task.cancel()
 
         try:
             await _async_sqs_delete_message(receipt_handle)

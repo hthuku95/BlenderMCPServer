@@ -43,6 +43,7 @@ async def bpy_render_handler(**kwargs: Any) -> dict[str, Any]:
     result_path = await generate_and_run_bpy(
         prompt=prompt, duration=duration, style=style,
         output_path=output_path, reference_image_url=ref_image_url,
+        thread_id=thread_id,
     )
 
     await record_job_progress(
@@ -123,6 +124,7 @@ async def manim_render_handler(**kwargs: Any) -> dict[str, Any]:
     result_path = await generate_and_run_manim(
         description=description, duration=duration, background=background,
         output_path=output_path, transparent=transparent, quality=quality,
+        thread_id=thread_id,
     )
 
     await record_job_progress(

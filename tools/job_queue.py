@@ -373,18 +373,53 @@ async def record_job_progress(
     started_at: str = "",
 ) -> None:
     _lazy_aws()
-    item = {
-        "job_id": job_id,
-        "workflow_thread_id": workflow_thread_id or job_id,
-        "tool": tool,
-        "state": state,
-        "stage": stage,
-        "message": message,
-        "details": json.dumps(details or {}),
-        "started_at": started_at or _now(),
-        "timestamp": _now(),
-    }
-    await asyncio.to_thread(_table.put_item, Item=item)
+    # Phase 2 fix: this used to be a full put_item with a PARTIAL item, which
+    # REPLACED the whole job record mid-flight — wiping claimed_by,
+    # lease_expires_at, args, error and result (masked only because the
+    # terminal path rewrote the full item). A targeted update preserves the
+    # rest of the record. "state" and "timestamp" are DDB reserved words ->
+    # aliased.
+    await asyncio.to_thread(
+        _update_progress_sync,
+        job_id,
+        state,
+        stage,
+        message,
+        json.dumps(details or {}),
+        workflow_thread_id or job_id,
+        tool,
+        started_at or _now(),
+    )
+
+
+def _update_progress_sync(
+    job_id: str,
+    state: str,
+    stage: str,
+    message: str,
+    details_json: str,
+    workflow_thread_id: str,
+    tool: str,
+    timestamp: str,
+) -> None:
+    _lazy_aws()
+    _table.update_item(
+        Key={"job_id": job_id},
+        UpdateExpression=(
+            "SET #s = :s, stage = :st, message = :m, details = :d, "
+            "workflow_thread_id = :w, tool = :t, #ts = :ts"
+        ),
+        ExpressionAttributeNames={"#s": "state", "#ts": "timestamp"},
+        ExpressionAttributeValues={
+            ":s": state,
+            ":st": stage,
+            ":m": message,
+            ":d": details_json,
+            ":w": workflow_thread_id,
+            ":t": tool,
+            ":ts": timestamp,
+        },
+    )
 
 
 async def _record_cancelled_progress_async(status: JobStatus) -> None:

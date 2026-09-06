@@ -15,7 +15,7 @@ Provider selection (LLM_PROVIDER env var):
   "auto"     — try Ollama first, then Bedrock, then Qwen, then Gemini, then NVIDIA, then DeepSeek, then Claude (default)
 
 Models:
-  Qwen     — qwen3.8-flash         (overridable via QWEN_MODEL)
+  Qwen     — qwen3.7-plus (multimodal: text+image+video) (overridable via QWEN_MODEL)
   Ollama   — gemma4:12b            (overridable via OLLAMA_MODEL)
   Gemini   — gemini-2.5-flash      (overridable via GEMINI_MODEL)
   NVIDIA   — google/gemma-4-31b-it (overridable via NVIDIA_NIM_MODEL)
@@ -80,9 +80,9 @@ _DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-v4-flash")
 _DEEPSEEK_TIMEOUT_SECONDS = float(os.getenv("DEEPSEEK_TIMEOUT_SECONDS", "60"))
 _QWEN_BASE_URL = os.getenv(
     "QWEN_BASE_URL",
-    "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
 )
-_QWEN_MODEL = os.getenv("QWEN_MODEL", "qwen3.8-flash")
+_QWEN_MODEL = os.getenv("QWEN_MODEL", "qwen3.7-plus")
 _QWEN_TIMEOUT_SECONDS = float(os.getenv("QWEN_TIMEOUT_SECONDS", "120"))
 _OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://172.31.43.45:11434")
 _OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "gemma4:12b")

@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import socket
+import threading
 import traceback as _traceback
 import uuid
 from datetime import datetime, timezone, timedelta
@@ -32,8 +33,16 @@ def _aws_session():
 _sqs = None
 _table = None
 
+# JOB_STORE=memory runs BlenderMCP completely standalone (in-process queue,
+# no AWS SQS/DynamoDB). Default stays "aws" for existing fleet compatibility.
+JOB_STORE = os.getenv("JOB_STORE", "aws").strip().lower()
+_MEMORY_JOBS: Dict[str, dict] = {}
+_MEMORY_LOCK = threading.Lock()
+
 
 def _lazy_aws():
+    if JOB_STORE == "memory":
+        return
     global _sqs, _table
     if _sqs is not None:
         return
@@ -42,7 +51,7 @@ def _lazy_aws():
     _table = session.resource("dynamodb").Table(os.environ["DYNAMODB_TABLE"])
 
 
-SQS_QUEUE_URL = os.environ["SQS_QUEUE_URL"]
+SQS_QUEUE_URL = os.environ.get("SQS_QUEUE_URL", "")
 
 
 # ---------------------------------------------------------------------------
@@ -127,6 +136,10 @@ class JobStatus:
 # ---------------------------------------------------------------------------
 
 def _put_status_sync(status: JobStatus) -> None:
+    if JOB_STORE == "memory":
+        with _MEMORY_LOCK:
+            _MEMORY_JOBS[status.job_id] = status.to_dict()
+        return
     _lazy_aws()
     item = status.to_dict()
     if isinstance(item.get("result"), dict) and item["result"] is not None:
@@ -140,6 +153,12 @@ async def _async_put_status(status: JobStatus) -> None:
 
 
 def _get_status_sync(job_id: str) -> Optional[JobStatus]:
+    if JOB_STORE == "memory":
+        with _MEMORY_LOCK:
+            item = _MEMORY_JOBS.get(job_id)
+        if item is None:
+            return None
+        return JobStatus.from_dict(item)
     _lazy_aws()
     resp = _table.get_item(Key={"job_id": job_id})
     item = resp.get("Item")
@@ -182,6 +201,11 @@ def _convert_to_ddb_types(obj):
     return obj
 
 def _scan_orphans_sync() -> list[JobStatus]:
+    if JOB_STORE == "memory":
+        with _MEMORY_LOCK:
+            items = [d for d in _MEMORY_JOBS.values()
+                     if d.get("state") in (State.PENDING.value, State.RUNNING.value)]
+        return [JobStatus.from_dict(i) for i in items]
     _lazy_aws()
     resp = _table.scan(
         FilterExpression="#s IN (:p, :r)",
@@ -284,6 +308,8 @@ async def _heartbeat_loop(job_id: str, stop: asyncio.Event) -> None:
 
 
 def _renew_lease_sync(job_id: str, lease_iso: str) -> None:
+    if JOB_STORE == "memory":
+        return
     _lazy_aws()
     _table.update_item(
         Key={"job_id": job_id},
@@ -301,6 +327,10 @@ def _claim_job_sync(job_id: str, lease_iso: str, started_at: str) -> bool:
     the original worker is still alive). ISO-8601 UTC timestamps compare
     correctly as strings."""
     _lazy_aws()
+    if JOB_STORE == "memory":
+        # Single-process store: the job was submitted here, no other process
+        # can claim it. Accept the claim unconditionally.
+        return True
     try:
         _table.update_item(
             Key={"job_id": job_id},
@@ -308,10 +338,10 @@ def _claim_job_sync(job_id: str, lease_iso: str, started_at: str) -> bool:
                 "SET #s = :running, claimed_by = :node, "
                 "lease_expires_at = :lease, started_at = :started"
             ),
-            ConditionExpression=(
-                "#s <> :running OR attribute_not_exists(lease_expires_at) "
-                "OR lease_expires_at < :now"
-            ),
+ConditionExpression=(
+        "#s <> :running OR attribute_not_exists(lease_expires_at) "
+        "OR lease_expires_at < :now"
+    ),
             ExpressionAttributeNames={"#s": "state"},
             ExpressionAttributeValues={
                 ":running": State.RUNNING.value,
@@ -328,6 +358,8 @@ def _claim_job_sync(job_id: str, lease_iso: str, started_at: str) -> bool:
 
 
 def _sqs_send_sync(status: JobStatus) -> str:
+    if JOB_STORE == "memory":
+        return "local"
     _lazy_aws()
     resp = _sqs.send_message(
         QueueUrl=SQS_QUEUE_URL,
@@ -342,6 +374,8 @@ async def _async_sqs_send(status: JobStatus) -> str:
 
 
 def _sqs_receive_sync() -> list[dict]:
+    if JOB_STORE == "memory":
+        return []
     _lazy_aws()
     resp = _sqs.receive_message(
         QueueUrl=SQS_QUEUE_URL,
@@ -362,6 +396,8 @@ async def _async_sqs_receive() -> list[dict]:
 
 
 def _sqs_delete_sync(receipt_handle: str) -> None:
+    if JOB_STORE == "memory":
+        return
     _lazy_aws()
     _sqs.delete_message(QueueUrl=SQS_QUEUE_URL, ReceiptHandle=receipt_handle)
 
@@ -384,6 +420,11 @@ async def record_job_progress(
     details: dict = None,
     started_at: str = "",
 ) -> None:
+    if JOB_STORE == "memory":
+        # In-memory store keeps everything in JobStatus; progress detail is a
+        # DDB-only nicety. Do NOT write a partial record here — that would
+        # clobber the full status (the exact bug Phase 2 fixed for DDB).
+        return
     _lazy_aws()
     # Phase 2 fix: this used to be a full put_item with a PARTIAL item, which
     # REPLACED the whole job record mid-flight — wiping claimed_by,
@@ -525,6 +566,11 @@ class JobQueue:
         )
         self._job_states[job_id] = status
         await _async_put_status(status)
+        if JOB_STORE == "memory":
+            # Standalone mode: dispatch directly in-process. The memory
+            # store is per-process, so there is exactly one consumer here.
+            asyncio.create_task(self._handle_job(status, "", 1))
+            return job_id
         await _async_sqs_send(status)
         return job_id
 
@@ -780,6 +826,13 @@ class JobQueue:
         limit: int = 50,
         status_filter: Optional[str] = None,
     ) -> list[dict]:
+        if JOB_STORE == "memory":
+            with _MEMORY_LOCK:
+                items = [
+                    dict(d) for d in _MEMORY_JOBS.values()
+                    if not status_filter or d.get("state") == status_filter
+                ][:limit]
+            return [self._json_ready(d) for d in items]
         _lazy_aws()
         kwargs: dict = {}
         if status_filter:
@@ -799,6 +852,12 @@ class JobQueue:
         return [self._json_ready(i) for i in items]
 
     async def get_pending_run_counts(self) -> dict:
+        if JOB_STORE == "memory":
+            with _MEMORY_LOCK:
+                items = list(_MEMORY_JOBS.values())
+            pending = sum(1 for i in items if i.get("state") == State.PENDING.value)
+            running = sum(1 for i in items if i.get("state") == State.RUNNING.value)
+            return {"pending": pending, "running": running}
         _lazy_aws()
         resp = await asyncio.to_thread(
             lambda: _table.scan(

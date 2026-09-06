@@ -575,11 +575,24 @@ class JobQueue:
         return job_id
 
     async def get_status(self, job_id: str) -> Optional[JobStatus]:
+        fresh = await _async_get_status(job_id)
+        if JOB_STORE == "memory":
+            # In-memory store IS the source of truth (single process); the
+            # submit-time cache would otherwise serve a stale QUEUED snapshot
+            # while _handle_job mutates the re-fetched object.
+            if fresh:
+                self._job_states[job_id] = fresh
+            return fresh
         if job_id in self._job_states:
             return self._job_states[job_id]
-        return await _async_get_status(job_id)
+        return fresh
 
     def get(self, job_id: str, force_refresh: bool = False) -> Optional[JobStatus]:
+        if JOB_STORE == "memory":
+            fresh = _get_status_sync(job_id)
+            if fresh:
+                self._job_states[job_id] = fresh
+            return fresh
         if not force_refresh and job_id in self._job_states:
             cached = self._job_states[job_id]
             if cached.state in (State.PENDING.value, State.QUEUED.value):

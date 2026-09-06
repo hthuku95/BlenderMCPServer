@@ -5,17 +5,17 @@ Mirrors the Rust video_editor pattern where both GeminiClient and ClaudeClient
 are optional AppState fields, selected by env var at startup.
 
 Provider selection (LLM_PROVIDER env var):
-  "qwen"     — fast lightweight Qwen 3 4B via Ollama (no API key needed)
+  "qwen"     — Qwen via DashScope OpenAI-compatible API (requires DASHSCOPE_API_KEY)
   "ollama"   — self-hosted Ollama Gemma 4B 12B (no API key needed, default)
   "gemini"   — always use Gemini (requires GEMINI_API_KEY)
   "nvidia"   — always use NVIDIA NIM Gemma (requires NVIDIA_API_KEY)
   "gemma"    — alias for NVIDIA NIM Gemma
   "deepseek" — always use DeepSeek (requires DEEPSEEK_API_KEY)
   "claude"   — always use Claude (requires ANTHROPIC_API_KEY)
-  "auto"     — try Qwen first, then Ollama, then Gemini, then NVIDIA, then DeepSeek, then Claude (default)
+  "auto"     — try Ollama first, then Bedrock, then Qwen, then Gemini, then NVIDIA, then DeepSeek, then Claude (default)
 
 Models:
-  Qwen     — qwen3:4b              (overridable via QWEEN_MODEL)
+  Qwen     — qwen3.8-flash         (overridable via QWEN_MODEL)
   Ollama   — gemma4:12b            (overridable via OLLAMA_MODEL)
   Gemini   — gemini-2.5-flash      (overridable via GEMINI_MODEL)
   NVIDIA   — google/gemma-4-31b-it (overridable via NVIDIA_NIM_MODEL)
@@ -78,12 +78,17 @@ _NVIDIA_NIM_TIMEOUT_SECONDS = float(os.getenv("NVIDIA_NIM_TIMEOUT_SECONDS", "75"
 _DEEPSEEK_BASE_URL = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
 _DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-v4-flash")
 _DEEPSEEK_TIMEOUT_SECONDS = float(os.getenv("DEEPSEEK_TIMEOUT_SECONDS", "60"))
+_QWEN_BASE_URL = os.getenv(
+    "QWEN_BASE_URL",
+    "https://dashscope.aliyuncs.com/compatible-mode/v1",
+)
+_QWEN_MODEL = os.getenv("QWEN_MODEL", "qwen3.8-flash")
+_QWEN_TIMEOUT_SECONDS = float(os.getenv("QWEN_TIMEOUT_SECONDS", "120"))
 _OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://172.31.43.45:11434")
 _OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "gemma4:12b")
 _OLLAMA_TIMEOUT_SECONDS = float(os.getenv("OLLAMA_TIMEOUT_SECONDS", "120"))
 _BEDROCK_MODEL = os.getenv("BEDROCK_MODEL_ID", "us.meta.llama4-maverick-17b-instruct-v1:0")
 _BEDROCK_TIMEOUT_SECONDS = float(os.getenv("BEDROCK_TIMEOUT_SECONDS", "120"))
-_QWEEN_MODEL = os.getenv("QWEEN_MODEL", "gemma4:12b")
 _CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-opus-4-6")
 _OLLAMA_EMBEDDING_MODEL = os.getenv("OLLAMA_EMBEDDING_MODEL", "qwen3-embedding:4b")
 
@@ -102,7 +107,7 @@ _PROVIDER     = os.getenv("LLM_PROVIDER", "auto").lower()  # "qwen" | "ollama" |
 # ---------------------------------------------------------------------------
 
 def _has_qwen() -> bool:
-    return True  # self-hosted on same Ollama server, no API key needed
+    return bool(os.getenv("DASHSCOPE_API_KEY"))
 
 
 def _has_ollama() -> bool:
@@ -132,6 +137,10 @@ def _has_bedrock() -> bool:
 def _resolved_provider() -> str:
     """Return the provider that will actually be used given current env."""
     if _PROVIDER == "qwen":
+        if not _has_qwen():
+            raise RuntimeError(
+                "LLM_PROVIDER=qwen but DASHSCOPE_API_KEY is not set"
+            )
         return "qwen"
 
     if _PROVIDER == "ollama":
@@ -172,8 +181,8 @@ def _resolved_provider() -> str:
             )
         return "bedrock"
 
-    # auto — prefer Ollama/gemma4:12b (multimodal vision), then Qwen (deprecated),
-    # then Gemini, then NVIDIA, then DeepSeek, then Claude
+    # auto — prefer Ollama/gemma4:12b (multimodal vision), then Bedrock,
+    # then Qwen (DashScope), then Gemini, then NVIDIA, then DeepSeek, then Claude
     if _has_ollama():
         return "ollama"
     if _has_bedrock():
@@ -209,7 +218,7 @@ def get_chat_model(
         temperature:  Sampling temperature (0.0–1.0).
         max_tokens:   Max output tokens.
         provider:     Override the LLM_PROVIDER env var for this call.
-                      "ollama" | "gemini" | "nvidia" | "gemma" | "deepseek" | "claude" | "auto" | None (use env).
+                      "qwen" | "ollama" | "gemini" | "nvidia" | "gemma" | "deepseek" | "claude" | "auto" | None (use env).
 
     Returns:
         A LangChain BaseChatModel that supports .bind_tools() and .invoke().
@@ -220,17 +229,18 @@ def get_chat_model(
         try:
             from langchain_openai import ChatOpenAI
             return ChatOpenAI(
-                model=_QWEEN_MODEL,
-                api_key="ollama",  # ignored by Ollama but required by ChatOpenAI
-                base_url=_ollama_openai_base_url(),
+                model=_QWEN_MODEL,
+                api_key=os.getenv("DASHSCOPE_API_KEY"),
+                base_url=_QWEN_BASE_URL,
                 temperature=temperature,
                 max_tokens=max_tokens,
-                timeout=_OLLAMA_TIMEOUT_SECONDS,
+                timeout=_QWEN_TIMEOUT_SECONDS,
             )
-        except Exception:
-            if _PROVIDER != "auto" or not _has_gemini():
-                raise
-            resolved = "gemini"
+        except ImportError as exc:
+            raise RuntimeError(
+                "LLM_PROVIDER=qwen requires langchain-openai for chat/tool models. "
+                "Raw generate_text() already supports Qwen/DashScope without this package."
+            ) from exc
 
     if resolved == "ollama":
         try:
@@ -315,6 +325,8 @@ def _resolve(override: str | None) -> str:
 
     override = override.lower()
     if override == "qwen":
+        if not _has_qwen():
+            raise RuntimeError("provider='qwen' but DASHSCOPE_API_KEY is not set")
         return "qwen"
     if override == "ollama":
         return "ollama"
@@ -436,12 +448,37 @@ async def _generate_text_with_qwen(
     temperature: float,
     max_tokens: int,
 ) -> str:
-    return await _generate_text_with_ollama_model(
-        model=_QWEEN_MODEL,
-        prompt=prompt,
-        temperature=temperature,
-        max_tokens=max_tokens,
-    )
+    api_key = os.getenv("DASHSCOPE_API_KEY")
+    if not api_key:
+        raise RuntimeError("DASHSCOPE_API_KEY is not set")
+
+    payload = {
+        "model": _QWEN_MODEL,
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": max_tokens,
+        "temperature": temperature,
+    }
+
+    async with httpx.AsyncClient(timeout=_QWEN_TIMEOUT_SECONDS) as client:
+        response = await client.post(
+            f"{_QWEN_BASE_URL}/chat/completions",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            json=payload,
+        )
+
+    if response.status_code >= 400:
+        raise RuntimeError(
+            f"Qwen error {response.status_code}: {response.text[:500]}"
+        )
+
+    data = response.json()
+    try:
+        return data["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError) as exc:
+        raise RuntimeError(f"Qwen returned no content: {data}") from exc
 
 
 async def _generate_text_with_ollama(

@@ -5,23 +5,23 @@ Mirrors the Rust video_editor pattern where both GeminiClient and ClaudeClient
 are optional AppState fields, selected by env var at startup.
 
 Provider selection (LLM_PROVIDER env var):
-  "qwen"     — Qwen via DashScope OpenAI-compatible API (requires DASHSCOPE_API_KEY)
-  "ollama"   — self-hosted Ollama Gemma 4B 12B (no API key needed, default)
+  "qwen"     — Qwen via DashScope OpenAI-compatible API (requires DASHSCOPE_API_KEY; default)
   "gemini"   — always use Gemini (requires GEMINI_API_KEY)
   "nvidia"   — always use NVIDIA NIM Gemma (requires NVIDIA_API_KEY)
   "gemma"    — alias for NVIDIA NIM Gemma
   "deepseek" — always use DeepSeek (requires DEEPSEEK_API_KEY)
   "claude"   — always use Claude (requires ANTHROPIC_API_KEY)
-  "auto"     — try Ollama first, then Bedrock, then Qwen, then Gemini, then NVIDIA, then DeepSeek, then Claude (default)
+  "bedrock"  — always use AWS Bedrock (requires AWS credentials)
+  "ollama"   — legacy self-hosted Ollama Gemma 4B 12B (deprecated)
+  "auto"     — try Qwen first, then Bedrock, then Gemini, then NVIDIA, then DeepSeek, then Claude
 
 Models:
   Qwen     — qwen3.7-plus (multimodal: text+image+video) (overridable via QWEN_MODEL)
-  Ollama   — gemma4:12b            (overridable via OLLAMA_MODEL)
   Gemini   — gemini-2.5-flash      (overridable via GEMINI_MODEL)
   NVIDIA   — google/gemma-4-31b-it (overridable via NVIDIA_NIM_MODEL)
   DeepSeek — deepseek-v4-flash     (overridable via DEEPSEEK_MODEL)
   Claude   — claude-opus-4-6       (overridable via CLAUDE_MODEL)
-  Embed    — qwen3-embedding:4b    (overridable via OLLAMA_EMBEDDING_MODEL)
+  Embed    — via tools.embedding_client (gemini-embedding-2, multimodal)
 
 LangSmith tracing (Phase 5):
   Set LANGCHAIN_API_KEY to enable automatic LangSmith tracing of all
@@ -88,9 +88,8 @@ _OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://172.31.43.45:11434")
 _OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "gemma4:12b")
 _OLLAMA_TIMEOUT_SECONDS = float(os.getenv("OLLAMA_TIMEOUT_SECONDS", "120"))
 _BEDROCK_MODEL = os.getenv("BEDROCK_MODEL_ID", "us.meta.llama4-maverick-17b-instruct-v1:0")
-_BEDROCK_TIMEOUT_SECONDS = float(os.getenv("BEDROCK_TIMEOUT_SECONDS", "120"))
+_BEDROCK_MODEL_VISION = os.getenv("BEDROCK_MODEL_ID_VISION", _BEDROCK_MODEL)
 _CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-opus-4-6")
-_OLLAMA_EMBEDDING_MODEL = os.getenv("OLLAMA_EMBEDDING_MODEL", "qwen3-embedding:4b")
 
 
 def _ollama_openai_base_url() -> str:
@@ -99,7 +98,7 @@ def _ollama_openai_base_url() -> str:
     if base.endswith("/v1"):
         return base
     return f"{base}/v1"
-_PROVIDER     = os.getenv("LLM_PROVIDER", "auto").lower()  # "qwen" | "ollama" | "gemini" | "nvidia" | "gemma" | "deepseek" | "claude" | "auto"
+_PROVIDER     = os.getenv("LLM_PROVIDER", "qwen").lower()  # "qwen" (default) | "gemini" | "nvidia" | "gemma" | "deepseek" | "claude" | "bedrock" | "ollama" | "auto"
 
 
 # ---------------------------------------------------------------------------
@@ -111,7 +110,7 @@ def _has_qwen() -> bool:
 
 
 def _has_ollama() -> bool:
-    return True  # self-hosted, no API key needed
+    return False  # Ollama is RETIRED (CLAUDE.md §52) — keep only for explicit LLM_PROVIDER=ollama legacy use
 
 
 def _has_gemini() -> bool:
@@ -181,14 +180,12 @@ def _resolved_provider() -> str:
             )
         return "bedrock"
 
-    # auto — prefer Ollama/gemma4:12b (multimodal vision), then Bedrock,
-    # then Qwen (DashScope), then Gemini, then NVIDIA, then DeepSeek, then Claude
-    if _has_ollama():
-        return "ollama"
-    if _has_bedrock():
-        return "bedrock"
+    # auto — try Qwen (DashScope) first, then Bedrock, then Gemini, then NVIDIA,
+    # then DeepSeek, then Claude. Ollama retired per CLAUDE.md §52.
     if _has_qwen():
         return "qwen"
+    if _has_bedrock():
+        return "bedrock"
     if _has_gemini():
         return "gemini"
     if _has_nvidia():
@@ -198,7 +195,9 @@ def _resolved_provider() -> str:
     if _has_claude():
         return "claude"
     raise RuntimeError(
-        "No LLM provider available. Ollama should always be reachable."
+        "No LLM provider available. Set at least one of DASHSCOPE_API_KEY, "
+        "AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY, GEMINI_API_KEY, "
+        "NVIDIA_API_KEY, DEEPSEEK_API_KEY, or ANTHROPIC_API_KEY."
     )
 
 
@@ -671,10 +670,10 @@ async def generate_text(
                     await asyncio.sleep(min(6, 2 * attempt))
                     continue
                 break
-        if _PROVIDER != "auto":
+        if _PROVIDER not in ("auto", "qwen"):
             raise RuntimeError("; ".join(qwen_errors))
-        # fall through to Ollama in auto mode
-        resolved = "ollama"
+        # fall through to Bedrock in auto/default-qwen mode (Ollama retired §52)
+        resolved = "bedrock"
 
     if resolved == "ollama":
         ollama_errors: list[str] = []
@@ -878,29 +877,7 @@ def active_provider() -> str:
 
 
 # ---------------------------------------------------------------------------
-# Embedding generation via Ollama (qwen3-embedding:4b)
-# ---------------------------------------------------------------------------
-
-def generate_embedding(text: str) -> list[float]:
-    """
-    Generate a vector embedding for the given text using the Ollama embedding model.
-    Uses qwen3-embedding:4b by default (overridable via OLLAMA_EMBEDDING_MODEL env var).
-    """
-    import requests
-    response = requests.post(
-        f"{_OLLAMA_BASE_URL}/api/embed",
-        json={
-            "model": _OLLAMA_EMBEDDING_MODEL,
-            "input": text,
-        },
-        timeout=30,
-    )
-    if response.status_code >= 400:
-        raise RuntimeError(
-            f"Ollama embedding error {response.status_code}: {response.text[:500]}"
-        )
-    data = response.json()
-    try:
-        return data["embeddings"][0]
-    except (KeyError, IndexError, TypeError) as exc:
-        raise RuntimeError(f"Ollama embedding returned no data: {data}") from exc
+# Embeddings are provided by tools/embedding_client (gemini-embedding-2,
+# multimodal) — see CLAUDE.md §3. Ollama's qwen3-embedding:4b remains banned
+# (text-only) and was removed here. Do not reintroduce an Ollama embedding
+# dependency.

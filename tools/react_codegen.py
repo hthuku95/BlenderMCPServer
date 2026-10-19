@@ -43,7 +43,7 @@ from langgraph.prebuilt import ToolNode
 
 from tools.llm_client import active_provider, get_chat_model
 
-MAX_REACT_TURNS = int(os.getenv("VIGA_REACT_MAX_TURNS", "10"))
+MAX_REACT_TURNS = int(os.getenv("VIGA_REACT_MAX_TURNS", "100"))
 
 # Context-bloat guards. The ReAct loop feeds the full accumulated message
 # history back to the model every turn; without caps, web_search/rag/docker
@@ -73,17 +73,19 @@ def _codegen_semaphore() -> asyncio.Semaphore | None:
     return _codegen_sem
 
 
-# Render budget (Phase 2): one shared deadline across all ReAct turns.
-# Enforced at turn boundaries so a job that cannot converge fails FAST with a
-# clear error instead of being killed mid-render by the whole-job timeout.
+# Render budget (Phase 2): a generous convergence safety valve shared across
+# all ReAct turns. Enforced at turn boundaries so a job that is genuinely
+# looping fails with a clear error instead of being killed mid-render by the
+# whole-job backstop. This is NOT a task deadline: it is intentionally long
+# (default 1h) and env-tunable so a real multi-render task can finish.
 # The whole-job JOB_TIMEOUT must remain the larger number (backstop only).
-_RENDER_BUDGET_SECS = float(os.getenv("RENDER_BUDGET_SECS", "1200"))
+_RENDER_BUDGET_SECS = float(os.getenv("RENDER_BUDGET_SECS", "3600"))
 
 # Durable execution (Phase 2): checkpoint the graph after every turn via
 # LangGraph's Postgres saver so a crashed/reclaimed run resumes instead of
 # restarting from turn 1. Kill switch: VIGA_CHECKPOINTER=off.
 _CHECKPOINTER_ENABLED = os.getenv("VIGA_CHECKPOINTER", "on").lower() not in ("off", "false", "0", "no")
-_CHECKPOINT_MAX_AGE_SECS = float(os.getenv("VIGA_CHECKPOINT_MAX_AGE_SECS", str(6 * 3600)))
+_CHECKPOINT_MAX_AGE_SECS = float(os.getenv("VIGA_CHECKPOINT_MAX_AGE_SECS", str(168 * 3600)))
 
 # Cancel polling (Phase 2): cross-node cancel is honored by checking the
 # job's DDB state between turns. 0 disables polling.

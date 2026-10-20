@@ -5,20 +5,20 @@ Mirrors the Rust video_editor pattern where both GeminiClient and ClaudeClient
 are optional AppState fields, selected by env var at startup.
 
 Provider selection (LLM_PROVIDER env var):
-  "qwen"     — Qwen via DashScope OpenAI-compatible API (requires DASHSCOPE_API_KEY; default)
+  "nvidia"   — always use NVIDIA NIM (requires NVIDIA_API_KEY; default)
+  "gemma"    — alias for NVIDIA NIM
+  "qwen"     — Qwen via DashScope OpenAI-compatible API (requires DASHSCOPE_API_KEY)
   "gemini"   — always use Gemini (requires GEMINI_API_KEY)
-  "nvidia"   — always use NVIDIA NIM Gemma (requires NVIDIA_API_KEY)
-  "gemma"    — alias for NVIDIA NIM Gemma
   "deepseek" — always use DeepSeek (requires DEEPSEEK_API_KEY)
   "claude"   — always use Claude (requires ANTHROPIC_API_KEY)
   "bedrock"  — always use AWS Bedrock (requires AWS credentials)
   "ollama"   — legacy self-hosted Ollama Gemma 4B 12B (deprecated)
-  "auto"     — try Qwen first, then Bedrock, then Gemini, then NVIDIA, then DeepSeek, then Claude
+  "auto"     — try NVIDIA first, then Qwen, Gemini, DeepSeek, Claude, Bedrock
 
 Models:
   Qwen     — qwen3.7-plus (multimodal: text+image+video) (overridable via QWEN_MODEL)
   Gemini   — gemini-2.5-flash      (overridable via GEMINI_MODEL)
-  NVIDIA   — google/gemma-4-31b-it (overridable via NVIDIA_NIM_MODEL)
+  NVIDIA   — nvidia/nemotron-3-ultra-550b-a55b (overridable via NVIDIA_NIM_MODEL)
   DeepSeek — deepseek-v4-flash     (overridable via DEEPSEEK_MODEL)
   Claude   — claude-opus-4-6       (overridable via CLAUDE_MODEL)
   Embed    — via tools.embedding_client (gemini-embedding-2, multimodal)
@@ -73,7 +73,9 @@ _NVIDIA_NIM_ENDPOINT = os.getenv(
     "NVIDIA_NIM_ENDPOINT",
     "https://integrate.api.nvidia.com/v1/chat/completions",
 )
-_NVIDIA_NIM_MODEL = os.getenv("NVIDIA_NIM_MODEL", "google/gemma-4-31b-it")
+# Verified serving on the production NVIDIA key (2026-10-20). `google/gemma-4-31b-it`
+# and most of the /v1/models listing return 404 "Function not found for account".
+_NVIDIA_NIM_MODEL = os.getenv("NVIDIA_NIM_MODEL", "nvidia/nemotron-3-ultra-550b-a55b")
 _NVIDIA_NIM_TIMEOUT_SECONDS = float(os.getenv("NVIDIA_NIM_TIMEOUT_SECONDS", "75"))
 _DEEPSEEK_BASE_URL = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
 _DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-v4-flash")
@@ -98,7 +100,7 @@ def _ollama_openai_base_url() -> str:
     if base.endswith("/v1"):
         return base
     return f"{base}/v1"
-_PROVIDER     = os.getenv("LLM_PROVIDER", "qwen").lower()  # "qwen" (default) | "gemini" | "nvidia" | "gemma" | "deepseek" | "claude" | "bedrock" | "ollama" | "auto"
+_PROVIDER     = os.getenv("LLM_PROVIDER", "nvidia").lower()  # "nvidia" (default) | "gemma" | "qwen" | "gemini" | "deepseek" | "claude" | "bedrock" | "ollama" | "auto"
 
 
 # ---------------------------------------------------------------------------
@@ -180,20 +182,21 @@ def _resolved_provider() -> str:
             )
         return "bedrock"
 
-    # auto — try Qwen (DashScope) first, then Bedrock, then Gemini, then NVIDIA,
-    # then DeepSeek, then Claude. Ollama retired per CLAUDE.md §52.
-    if _has_qwen():
-        return "qwen"
-    if _has_bedrock():
-        return "bedrock"
-    if _has_gemini():
-        return "gemini"
+    # auto — NVIDIA NIM first (owner directive Oct 20 2026: Qwen is in arrearage,
+    # DeepSeek returns 402, Gemini is free-tier capped at 5 req/min and 429s).
+    # Then Qwen, Gemini, DeepSeek, Claude, Bedrock. Ollama retired per CLAUDE.md §52.
     if _has_nvidia():
         return "nvidia"
+    if _has_qwen():
+        return "qwen"
+    if _has_gemini():
+        return "gemini"
     if _has_deepseek():
         return "deepseek"
     if _has_claude():
         return "claude"
+    if _has_bedrock():
+        return "bedrock"
     raise RuntimeError(
         "No LLM provider available. Set at least one of DASHSCOPE_API_KEY, "
         "AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY, GEMINI_API_KEY, "

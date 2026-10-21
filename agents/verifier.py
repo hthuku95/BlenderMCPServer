@@ -47,6 +47,17 @@ def _build_verifier_prompt(
             for fb in previous_feedback
         )
 
+    # Pre-compute optional sections: Python 3.11 forbids backslashes inside
+    # f-string expressions, so nested f-strings with "\n" cannot be inlined.
+    blender_section = (
+        f"═══ BLENDER FILE ═══\n{blender_file_path}" if blender_file_path else ""
+    )
+    feedback_block = (
+        f"═══ PREVIOUS FEEDBACK HISTORY ═══\n{feedback_section}"
+        if feedback_section
+        else ""
+    )
+
     return f"""\
 You are a VIGA Verifier Agent. Your job is to evaluate a rendered 3D animation
 video against its original creative brief and judge quality.
@@ -62,8 +73,8 @@ video against its original creative brief and judge quality.
 ═══ OUTPUT VIDEO URL ═══
 {video_url}
 
-{f"═══ BLENDER FILE ═══\n{blender_file_path}" if blender_file_path else ""}
-{f"═══ PREVIOUS FEEDBACK HISTORY ═══\n{feedback_section}" if feedback_section else ""}
+{blender_section}
+{feedback_block}
 
 ═══ EVALUATION CRITERIA ═══
 Rate the rendered video on these dimensions (1-10):

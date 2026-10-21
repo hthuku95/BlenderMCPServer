@@ -1,4 +1,4 @@
-mcp>=1.26.0
+mcp>=1.26.0,<2  # FastMCP moved to mcp.server.mcpserver in 2.x
 fastapi>=0.115.0
 uvicorn[standard]>=0.32.0
 starlette>=0.41.0
